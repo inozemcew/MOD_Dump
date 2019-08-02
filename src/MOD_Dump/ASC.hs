@@ -1,0 +1,414 @@
+module MOD_Dump.ASC (readASCModule)  where
+
+-- ASC module format:
+    -- +0 = Delay :: Byte
+    -- +1 = Looping position :: Byte
+    -- +2 = Patterns table offset :: Word
+    -- +4 = Sample table offset :: Word
+    -- +6 = Ornament table offset :: Word
+    -- +8 = Number of positions :: Byte
+    -- +9 = Positions :: [Byte]::`Number of positions`
+
+    -- if `Patterns table offset` - `Number of positions` == 72 then
+    --      +(`Patterns table offset`) - 44 = Title :: [Char]::20
+    --      +(`Patterns table offset`) - 20 = Author :: [Char]::20
+    --
+    -- +(`Patterns table offset`) = Pattern channels offsets :: [(Word, Word, Word)]
+    -- +(`Patterns table offset`) + (`Pattern channel offset`) = Pattern data
+
+    -- Pattern data :: [ByteString] =
+        --                  | 0x00 .. 0x55 = Note, if volume == 'EN' then followed by byte of envelope period
+        --                  | 0x56 .. 0x5d = Empty note
+        --                  | 0x5d         = Release sample
+        --                  | 0x5e         = Pause
+        --                  | 0x60 .. 0x9f = Skip x rows after note or relese or pause
+        --                  | 0xa0 .. 0xbf = Set current sample
+        --                  | 0xc0 .. 0xdf = Set current image
+        --                  | 0xe0         = Set current volume as 'EN'
+        --                  | 0xe1 .. 0xef = Set current volume 1..f
+        --                  | 0xf0, n      = Set noise period as `n`
+        --                  | 0xf1         = Hold sample command
+        --                  | 0xf2         = Hold image command
+        --                  | 0xf3         = Hold sample and image
+        --                  | 0xf4, n      = Set delay as `n` command
+        --                  | 0xf5, n      = GlisUp `n` command
+        --                  | 0xf6, n      = GlisDn `n` command
+        --                  | 0xf7, n      = Port.S+ `n` command
+        --                  | 0xf8         = Set envelope form 8 '\'
+        --                  | 0xf9, n      = Port.S- command
+        --                  | 0xfa         = Set envelope form 10 'V'
+        --                  | 0xfb, n      = Unknown command, consumes 1 byte
+        --                  | 0xfc         = Set envelope form 12 '/'
+        --                  | 0xfe         = Set envelope form 14 '^'
+
+import MOD_Dump.Module
+import MOD_Dump.Utils
+import qualified Data.ByteString.Lazy.Char8 as B
+import Data.Binary.Get
+import Control.Monad
+import Control.Monad.Trans
+import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.State
+import GHC.Word
+import Data.List(intercalate, transpose)
+
+readASCModule :: String -> B.ByteString -> Maybe Module
+readASCModule e bs = do
+    guard (e == ".asc" || e ==".C")
+    m <- either (const Nothing) (\(_,_,x) -> Just x) $ runGetOrFail getASCModule bs
+    return $ ascModule m
+
+ascModule :: ASCModule -> Module
+ascModule m = Module {
+    printInfo =  printASCInfo m,
+    printPatterns = \w r  -> mapM_ printASCPatterns $ splitBy w $ filterInRange patternNumber r $ patterns m,
+    printSamples = \r  -> print "Samples",
+    printOrnaments = \r  -> print "Ornament"
+}
+
+---------------
+data ASCModule = ASCModule {
+        delay :: Int,
+        loopingPos :: Int,
+        positions :: [Position],
+        patterns :: [Pattern],
+        title :: String,
+        author :: String
+    } deriving (Eq, Show)
+
+data Tables = Tables {
+    patternsTable :: Int,
+    sampleTable :: Int,
+    imageTable :: Int
+} deriving (Show)
+
+getASCModule :: Get ASCModule
+getASCModule = do
+            -- for module with built-in player get Title and Author from that player and skip to module data
+            ta <- lookAheadM getMaybeTandAFromPlayer
+
+            (d, l, tables, ps, t, a) <- lookAhead $ getHeader ta
+            -- sample table can start only 9 or 72 bytes after positions table
+            guard $ any (patternsTable tables - length ps ==) [9,72]
+
+            s1 <- peekWord16 $ sampleTable tables
+            guard (s1 == 0x40)
+
+            i1 <- peekWord16 $ imageTable tables
+            guard (i1 == 0x40)
+
+            let count = maximum ps
+            p1 <- peekWord16 $ patternsTable tables
+            guard (count * 6 + 6 == p1)
+
+            patterns' <- lookAhead $ getPatterns (patternsTable tables) count
+            return ASCModule {
+                delay =  d,
+                loopingPos = l,
+                positions = ps,
+                patterns = patterns',
+                title = t,
+                author = a
+            }
+
+getHeader :: Maybe (String, String) -> Get (Int, Int, Tables, [Position], String, String)
+getHeader ta =  do
+        d <- fromIntegral `liftM` getWord8
+        l <- fromIntegral `liftM` getWord8
+
+        p <- fromIntegral `liftM` getWord16le
+        s <- fromIntegral `liftM` getWord16le
+        o <- fromIntegral `liftM` getWord16le
+        let tables = Tables p s o
+
+        n <- fromIntegral `liftM` getWord8
+        ps <- replicateM n $ fromIntegral `liftM` getWord8
+
+        (t,a) <- maybe (getTAndA p ps) return ta
+        return (d, l, tables, ps, t, a)
+
+getTAndA :: Int -> [Int] -> Get (String, String)
+getTAndA pt p = if pt - length p /= 72
+                    then return ("","")
+                    else do
+                        skip 19
+                        doGetTAndA
+
+doGetTAndA :: Get (String, String)
+doGetTAndA = do
+    t <- getLazyByteString 20
+    skip 4
+    a <- getLazyByteString 20
+    return (B.unpack t, B.unpack a)
+
+
+chkByte :: Int -> (Word8 -> Bool) -> MaybeT Get ()
+chkByte n g = do
+        x <- lift $ skip n >> getWord8
+        guard $ g x
+
+chkBString :: Int -> B.ByteString -> MaybeT Get ()
+chkBString n s = do
+        s' <- lift $ skip n >> getLazyByteString (B.length s)
+        guard (s' == s)
+
+skipWhile :: [Word8] -> Get ()
+skipWhile s = skipWhile' s s
+    where
+        skipWhile' _ [] = return ()
+        skipWhile' s (x:xs) = do
+            w <- getWord8
+            if w == x then skipWhile' s xs else skipWhile' s s
+
+getMaybeTandAFromPlayer :: Get (Maybe (String, String))
+getMaybeTandAFromPlayer = runMaybeT $ do
+        chkByte 11 (\x -> x == 0xc3 || x == 0x18)
+        chkByte 2 (== 0xc3)
+        chkByte 2 (== 0xc3)
+        chkBString 2 $ B.pack "ASM COMPILATION OF "
+        ta <- lift $ doGetTAndA
+        lift $ skipWhile [0x28,0, 0x26,0, 0x24,0, 0x22,0, 0x20,0, 0x1E,0, 0x1C,0]
+        return ta
+
+
+printASCInfo :: ASCModule -> IO ()
+printASCInfo m = do
+    putStrLn $ "Song type: ASC Sound master compiled song"
+    putStrLn $ "Song title: " ++ show (title m)
+    putStrLn $ "Composed: " ++ show (author m)
+    putStrLn $ "Delay: " ++ show (delay m)
+    putStrLn $ "Looping position: " ++ show (loopingPos m)
+
+    putStrLn $ "Positions: " ++ concatMap showPosition (positions m)
+
+-----------------
+
+type Position = Int
+showPosition pn = '{':show pn ++ "}"
+
+
+readPositions :: B.ByteString -> [Position]
+readPositions bs = map fromIntegral $ runGet getPositions bs
+    where
+        getPositions= do
+            skip 8
+            l <- getWord8
+            replicateM (fromIntegral l) getWord8
+
+--------------------------
+data Pattern = Pattern Int [Shared] Channel Channel Channel deriving (Eq)
+
+instance Show Pattern where
+    showsPrec _ pat = showString "Pattern " . shows (patternNumber pat)
+
+patternNumber :: Pattern -> Int
+patternNumber (Pattern n _ _ _ _) = n
+
+mapPattern :: ((Int, Shared, [Note]) -> a) -> Pattern -> [a]
+mapPattern f (Pattern _ ss as bs cs) = map f $ zip3 [0..] ss $ transpose [as,bs,cs]
+
+showRow :: (Int, Shared, [Note]) -> String
+showRow (i, (Shared freq form mask noise), abc) = let header = shows2 i . (" | " ++). shows freq . shows form . shows mask . shows noise . (' ':)
+                                                  in  foldl (\a x -> a . shows x) header abc ""
+
+showPattern :: Pattern -> [String]
+showPattern p = padSRight (length sep) (show p) : sep : mapPattern (showRow) p ++ [sep,""]
+
+sep = "---+--------+------------+------------+----------- "
+
+getPatterns:: Int -> Int -> Get [Pattern]
+getPatterns offset count = do
+    skip offset
+    forM [0..count-1] $ \i -> do
+        a <- getWord16le
+        b <- getWord16le
+        c <- getWord16le
+        let i6 = i * 6 + 6
+        chA <-lookAhead $ getChannel (fromIntegral a - i6)
+        chB <-lookAhead $ getChannel (fromIntegral b - i6)
+        chC <-lookAhead $ getChannel (fromIntegral c - i6)
+        return $ Pattern i (map shared $ transpose [chA, chB, chC]) chA chB chC
+
+printASCPatterns :: [Pattern] -> IO ()
+printASCPatterns ps = printLine $ map (showPattern) ps
+    where
+        printLine [] = putStrLn ""
+        printLine l = do
+            let h = intercalate "   " $ map ((padSRight $ length sep) . headS) l
+            putStrLn h
+            let t = map (drop 1) l
+            when (not.null $ concat t) $ printLine t
+
+
+-------------------------------------------------------------
+
+data Pitch = Pitch Int | Pause | Release | None deriving (Eq)
+
+instance Show Pitch where
+    showsPrec _ Pause = showString "PSE"
+    showsPrec _ Release = showString "RLS"
+    showsPrec _ None = showString "___"
+    showsPrec _ (Pitch i) = let (o,n) = divMod (i+10) 12 in  showChar (octaveNames !! o) . showString ( noteNames !! n)
+        where
+            noteNames = ["_C","#C","_D","#D","_E","_F","#F","_G","#G","_A","#A","_B"]
+            octaveNames = "UCLS1234"
+
+---------------
+data NoteCmd = NoCmd | HldSample | HldImage | HldInstr | Quant Int | GlisUp Int | GlisDn Int | PortM Int | PortP Int deriving (Eq)
+
+instance Show NoteCmd where
+    showsPrec _ NoCmd = showChar '|'
+    showsPrec _ _     = showChar '#'
+
+---------------
+newtype EnvFreq = EnvFreq Int deriving (Ord,Eq)
+
+instance Show EnvFreq where
+    showsPrec _ (EnvFreq x) = if x == 0 then ("___" ++) else shows3 x
+
+toEnvFreq :: (Integral a) => a -> EnvFreq
+toEnvFreq = EnvFreq . fromIntegral
+
+noEnvFreq = EnvFreq 0
+
+data EnvForm = EnvFormNone | EnvFormDecay | EnvFormDecayAttack | EnvFormAttack | EnvFormAttackDecay deriving (Eq)
+
+instance Show EnvForm where
+    showsPrec _ EnvFormDecay = showChar '\\'
+    showsPrec _ EnvFormDecayAttack = showChar 'V'
+    showsPrec _ EnvFormAttack = showChar '/'
+    showsPrec _ EnvFormAttackDecay = showChar '^'
+    showsPrec _ _ = showChar '_'
+
+
+newtype NoiseMask = NoiseMask Int deriving (Eq)
+
+noNoiseMask = NoiseMask 7
+
+instance Show NoiseMask where
+    showsPrec _ (NoiseMask 7) = ('_':)
+    showsPrec _ (NoiseMask x) = showsB 1 x
+
+maskShift1 :: NoiseMask -> NoiseMask
+maskShift1 (NoiseMask m) = NoiseMask (m `div` 2 + 4)
+maskShift0 :: NoiseMask -> NoiseMask
+maskShift0 (NoiseMask m) = NoiseMask (m `div` 2)
+
+newtype Noise = Noise Int deriving (Eq)
+
+noNoise = Noise 0
+
+instance Show Noise where
+    showsPrec _ (Noise 0) = ('_':)
+    showsPrec _ (Noise x) = shows32 x
+
+toNoise :: (Integral a) => a -> Noise
+toNoise = Noise . fromIntegral
+
+---------------
+data Shared = Shared {
+    sharedEnvFreq :: EnvFreq,
+    sharedEnvForm :: EnvForm,
+    sharedMask :: NoiseMask,
+    sharedNoise :: Noise
+} deriving (Eq)
+
+instance Show Shared where
+    showsPrec _ (Shared freq form mask noise) = shows freq . shows form .shows mask. shows noise
+
+shared :: [Note] -> Shared
+shared abc = Shared {
+    sharedEnvFreq = eFreq,
+    sharedEnvForm = eForm,
+    sharedMask = mask,
+    sharedNoise = noise
+}
+    where
+        findF f a x = if noteVolume x == 0 then f x else a
+        eFreq = foldl (findF noteEnvFreq) noEnvFreq abc
+        eForm = foldl (findF noteEnvForm) EnvFormNone abc
+        (noise,mask) = foldl (\(n,m) x -> let nn = noteNoise x in if nn == noNoise then (n, maskShift1 m) else (nn, maskShift0 m)) (noNoise, noNoiseMask) abc
+
+---------------
+data Note = Note {
+    noteCmd :: NoteCmd,
+    notePitch :: Pitch,
+    noteSample :: Int,
+    noteImage :: Int,
+    noteVolume :: Int,
+    noteEnvForm :: EnvForm,
+    noteEnvFreq :: EnvFreq,
+    noteNoise :: Noise
+} deriving (Eq)
+
+instance Show Note where
+    showsPrec _ (Note cmd (Pitch pitch) sample image volume _ _ _) = shows cmd
+        .(' ':). shows (Pitch pitch)
+        .(' ':). shows32 sample
+        .(' ':). shows32 image
+        .(' ':). showsVolume volume
+        .(' ':)
+        where
+            showsVolume v
+                | v == 0 = ("EN" ++)
+                | otherwise = shows2 v
+
+    showsPrec _ note = shows (noteCmd note) .(' ':). shows (notePitch note) .(" _ _ __ "++)
+
+---------------
+type Channel = [Note]
+
+getChannel :: Int -> Get Channel   --- Empty channel returns empty list - error!!
+getChannel offset = skip offset >> evalStateT getNewNotes 0
+    where
+        emptyNote = Note NoCmd None 0 0 15 EnvFormNone noEnvFreq noNoise
+        getNewNotes = getNotes emptyNote
+        getNotes n = do
+            v <- lift getWord8
+            switch n $ fromIntegral v
+
+        switch n x
+            | x == 255 = return []                                              -- End of pattern
+            | x <= 0x55 = yieldNote $ n{notePitch = Pitch x}                    -- Note, may be followed by env period if volume='EN'
+            | x >= 0x56 && x <= 0x5d = yieldNote' $ n{notePitch = None}         -- No note, just placeholder for empty channel
+            | x == 0x5e = yieldNote' $ n{notePitch = Release}                   -- Release sample
+            | x == 0x5f = yieldNote' $ n{notePitch = Pause}                     -- Pause
+            | x >= 0x60 && x <= 0x9f = do                                       -- Skip x rows after note or relese or pause
+                put (x - 0x60)
+                getNotes n
+            | x >= 0xa0 && x <= 0xbf = getNotes $ n{noteSample = x - 0xa0}      -- Set current sample
+            | x >= 0xc0 && x <= 0xdf = getNotes $ n{noteImage = x - 0xc0}       -- Set current image
+            | x >= 0xe0 && x <= 0xef = getNotes $ n{noteVolume = x - 0xe0}      -- Set current volume
+            | x == 0xf0 = do                                                    -- Set noise period
+                noise <- lift getWord8
+                getNotes $ n{noteNoise = toNoise noise}
+            | x == 0xf1 = getNotes $ n{noteCmd = HldSample}                     -- Hold sample command
+            | x == 0xf2 = getNotes $ n{noteCmd = HldImage}                      -- Hold image command
+            | x == 0xf3 = getNotes $ n{noteCmd = HldInstr}                      -- Hold sample and image
+            | x == 0xf4 = setCmd Quant                                          -- Set delay command
+            | x == 0xf5 = setCmd GlisUp                                         -- GlisUp command
+            | x == 0xf6 = setCmd GlisDn                                         -- GlisDn command
+            | x == 0xf7 = setCmd PortP                                          -- Port.S+ command
+            | x == 0xf8 = getNotes $ n{noteEnvForm = EnvFormDecay}              -- Set envelope form 8 '\'
+            | x == 0xf9 = setCmd PortM                                          -- Port.S- command
+            | x == 0xfa = getNotes $ n{noteEnvForm = EnvFormDecayAttack}        -- Set envelope form 10 'V'
+            | x == 0xfb = lift getWord8 >> getNotes n                           -- Unknown command, consumes 1 byte
+            | x == 0xfc = getNotes $ n{noteEnvForm = EnvFormAttack}             -- Set envelope form 12 '/'
+            | x == 0xfe = getNotes $ n{noteEnvForm = EnvFormAttackDecay}        -- Set envelope form 14 '^'
+            | otherwise = getNotes n
+            where
+                setCmd c = do
+                    d <- lift getWord8
+                    getNotes $ n{noteCmd = c $ fromIntegral d}
+
+        yieldNote x = do
+            e <- if (noteVolume x == 0)
+                    then lift $ toEnvFreq `liftM` getWord8
+                    else return $ noteEnvFreq x
+            yieldNote' $ x{noteEnvFreq = e}
+        yieldNote' x = do
+            r <- get
+            ns <- getNotes $ x{noteCmd = NoCmd}
+            return $ x : replicate r emptyNote ++ ns
+
+--------------
