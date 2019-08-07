@@ -3,6 +3,7 @@ module MOD_Dump.Utils where
 import Data.Binary.Get
 import Control.Monad
 import Control.Monad.Trans
+import Data.List(intercalate)
 
 showsP :: Char -> Int -> Int -> ShowS
 showsP c n i = (padLeft c n (show i) ++)
@@ -27,8 +28,8 @@ showsHex n x = let (r,q) = divMod x 16 in  showsHex (n-1) r . showChar (hexDigit
 shows32 :: Int -> ShowS
 shows32 x = if x<10 then shows x else showChar $ toEnum (x+55)
 
-showSgnInt :: Int -> Int -> String
-showSgnInt len n = let s = replicate len ' ' ++ sgn ++ show n in drop (length s - len) s
+showsSgnInt :: Int -> Int -> ShowS
+showsSgnInt len n = let s = replicate len ' ' ++ sgn ++ show n in (drop (length s - len) s ++)
     where
         sgn = if n < 0 then "" else "+"
 
@@ -49,6 +50,15 @@ padSRight = padRight ' '
 headS :: [String] -> String
 headS [] = ""
 headS (s:ss) = s
+
+
+printColumned _ [] = putStrLn ""
+printColumned w l = do
+    let h = intercalate "   " $ map (padSRight w . headS) l
+    putStrLn h
+    let t = map (drop 1) l
+    when (not.null $ concat t) $ printColumned w t
+
 
 ------
 peekWord16 :: Int -> Get Int

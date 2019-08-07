@@ -41,10 +41,26 @@ module MOD_Dump.ASC (readASCModule)  where
         --                  | 0xfc         = Set envelope form 12 '/'
         --                  | 0xfe         = Set envelope form 14 '^'
 
+    -- Sample data :: [(Byte, Byte, Byte)]
+        -- +0 = | bit 7 == 1 = Loop start point
+        --      | bit 6 == 1 = Loop end point
+        --      | bit 5 == 1 = sample end
+        --      | bit 4..0 = noise deviation
+        -- +1 = pitch deviation
+        -- +2 = | bit 0 == 1 = tone present
+            --  | bit 2,1 ==    | 00 = No volume change
+                            --  | 01 = Envelope enabled
+                            --  | 10 = Decrease volume
+                            --  | 11 = Increase volume
+            --  | bit 3 == 1 = noise present
+            --  | bit 4..7 = current volume
+
+
 import MOD_Dump.Module
 import MOD_Dump.Utils
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
+import Data.Bits
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.Maybe
@@ -62,7 +78,7 @@ ascModule :: ASCModule -> Module
 ascModule m = Module {
     printInfo =  printASCInfo m,
     printPatterns = \w r  -> mapM_ printASCPatterns $ splitBy w $ filterInRange patternNumber r $ patterns m,
-    printSamples = \r  -> print "Samples",
+    printSamples = \r  -> mapM_ printASCSamples $ splitBy 3 $ filterInRange sampleNumber r  $ samples m,
     printOrnaments = \r  -> print "Ornament"
 }
 
@@ -72,6 +88,7 @@ data ASCModule = ASCModule {
         loopingPos :: Int,
         positions :: [Position],
         patterns :: [Pattern],
+        samples :: [Sample],
         title :: String,
         author :: String
     } deriving (Eq, Show)
@@ -102,11 +119,15 @@ getASCModule = do
             guard (count * 6 + 6 == p1)
 
             patterns' <- lookAhead $ getPatterns (patternsTable tables) count
+
+            samples' <- lookAhead $ getSamples (sampleTable tables)
+
             return ASCModule {
                 delay =  d,
                 loopingPos = l,
                 positions = ps,
                 patterns = patterns',
+                samples = samples',
                 title = t,
                 author = a
             }
@@ -142,24 +163,6 @@ doGetTAndA = do
     return (B.unpack t, B.unpack a)
 
 
-chkByte :: Int -> (Word8 -> Bool) -> MaybeT Get ()
-chkByte n g = do
-        x <- lift $ skip n >> getWord8
-        guard $ g x
-
-chkBString :: Int -> B.ByteString -> MaybeT Get ()
-chkBString n s = do
-        s' <- lift $ skip n >> getLazyByteString (B.length s)
-        guard (s' == s)
-
-skipWhile :: [Word8] -> Get ()
-skipWhile s = skipWhile' s s
-    where
-        skipWhile' _ [] = return ()
-        skipWhile' s (x:xs) = do
-            w <- getWord8
-            if w == x then skipWhile' s xs else skipWhile' s s
-
 getMaybeTandAFromPlayer :: Get (Maybe (String, String))
 getMaybeTandAFromPlayer = runMaybeT $ do
         chkByte 11 (\x -> x == 0xc3 || x == 0x18)
@@ -169,6 +172,21 @@ getMaybeTandAFromPlayer = runMaybeT $ do
         ta <- lift $ doGetTAndA
         lift $ skipWhile [0x28,0, 0x26,0, 0x24,0, 0x22,0, 0x20,0, 0x1E,0, 0x1C,0]
         return ta
+    where
+        chkByte n g = do
+                x <- lift $ skip n >> getWord8
+                guard $ g x
+
+        chkBString n s = do
+                s' <- lift $ skip n >> getLazyByteString (B.length s)
+                guard (s' == s)
+
+        skipWhile s = skipWhile' s s
+            where
+                skipWhile' _ [] = return ()
+                skipWhile' s (x:xs) = do
+                    w <- getWord8
+                    if w == x then skipWhile' s xs else skipWhile' s s
 
 
 printASCInfo :: ASCModule -> IO ()
@@ -181,21 +199,12 @@ printASCInfo m = do
 
     putStrLn $ "Positions: " ++ concatMap showPosition (positions m)
 
------------------
+-----------------------------------------------
 
 type Position = Int
 showPosition pn = '{':show pn ++ "}"
 
-
-readPositions :: B.ByteString -> [Position]
-readPositions bs = map fromIntegral $ runGet getPositions bs
-    where
-        getPositions= do
-            skip 8
-            l <- getWord8
-            replicateM (fromIntegral l) getWord8
-
---------------------------
+---------------
 data Pattern = Pattern Int [Shared] Channel Channel Channel deriving (Eq)
 
 instance Show Pattern where
@@ -212,9 +221,9 @@ showRow (i, (Shared freq form mask noise), abc) = let header = shows2 i . (" | "
                                                   in  foldl (\a x -> a . shows x) header abc ""
 
 showPattern :: Pattern -> [String]
-showPattern p = padSRight (length sep) (show p) : sep : mapPattern (showRow) p ++ [sep,""]
+showPattern p = padSRight (length patternSep) (show p) : patternSep : mapPattern (showRow) p ++ [patternSep, ""]
 
-sep = "---+--------+------------+------------+----------- "
+patternSep = "---+--------+------------+------------+----------- "
 
 getPatterns:: Int -> Int -> Get [Pattern]
 getPatterns offset count = do
@@ -230,15 +239,7 @@ getPatterns offset count = do
         return $ Pattern i (map shared $ transpose [chA, chB, chC]) chA chB chC
 
 printASCPatterns :: [Pattern] -> IO ()
-printASCPatterns ps = printLine $ map (showPattern) ps
-    where
-        printLine [] = putStrLn ""
-        printLine l = do
-            let h = intercalate "   " $ map ((padSRight $ length sep) . headS) l
-            putStrLn h
-            let t = map (drop 1) l
-            when (not.null $ concat t) $ printLine t
-
+printASCPatterns ps = printColumned (length patternSep) $ map (showPattern) ps
 
 -------------------------------------------------------------
 
@@ -406,9 +407,90 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
                     then lift $ toEnvFreq `liftM` getWord8
                     else return $ noteEnvFreq x
             yieldNote' $ x{noteEnvFreq = e}
+
         yieldNote' x = do
             r <- get
             ns <- getNotes $ x{noteCmd = NoCmd}
             return $ x : replicate r emptyNote ++ ns
 
 --------------
+data Sample = Sample {
+    sampleNumber :: Int,
+    sampleData :: [SampleData],
+    sampleLoopStart :: Int,
+    sampleLoopEnd :: Int
+} deriving (Eq, Show)
+
+getSamples :: Int -> Get [Sample]
+getSamples s = do
+    skip s
+    forM [0..31] $ \i -> do
+        w <- getWord16le
+        (d,(ls,le)) <- lookAhead $ getSampleData (fromIntegral w - i * 2 - 2)
+        return $ Sample i d ls le
+
+printASCSamples :: [Sample] -> IO ()
+printASCSamples s = printColumned (length sampleSep) $ map showSample s
+
+sampleSep = "---+----+------+-----------"
+
+showSample :: Sample -> [String]
+showSample s = let
+                 in
+                    ("Sample: " ++ shows32 (sampleNumber s) "") :
+                    sampleSep :
+                    [ (shows2 i . (" | " ++). showChar ss . showChar sd. (" | "++) $ show d) |
+                        (i,d) <- zip [0..] $ sampleData s,
+                        let ss = if i == sampleLoopStart s then '(' else ' ',
+                        let sd = if i == sampleLoopEnd s then ')' else ' ' ]
+                    ++ [sampleSep]
+
+data SampleData = SampleData {
+    sampleDataNoiseDev :: Int,
+    sampleDataToneDev :: Int,
+    sampleDataVolume :: Int,
+    sampleDataNoiseMask :: Bool,
+    sampleDataToneMask :: Bool,
+    sampleDataEffect :: SampleDataEffect
+} deriving (Eq)
+
+instance Show SampleData where
+    showsPrec _ (SampleData nd td v nm tm ef) = showsSgnInt 4 nd . ( " | " ++ ) . showsSgnInt 3 td . (' ':) . shows2 v. (' ':) . showsTM . showsNM . shows ef
+        where
+            showsTM = if tm then ('T':) else ('_':)
+            showsNM = if nm then ('N':) else ('_':)
+
+getSampleData :: Int -> Get ([SampleData], (Int, Int))
+getSampleData s = do
+    skip s
+    runStateT (doGetSampleData 0) (0,0)
+        where
+            doGetSampleData :: Int -> StateT (Int, Int) Get [SampleData]
+            doGetSampleData i = do
+                b0 <- lift $ getWord8
+                b1 <- lift $ getInt8
+                b2 <- lift $ getWord8
+                when (b0 `testBit` 7) $ modify (\(_,x) -> (i,x))
+                when (b0 `testBit` 6) $ modify (\(x,_) -> (x,i))
+                let nd = fromIntegral $ b0 .&. 0x1f
+                let td = fromIntegral $ b1
+                let v =  fromIntegral $ b2 `shiftR` 4 .&. 0xf
+                let tm = not $ b2 `testBit` 0
+                let nm = not $ b2 `testBit` 3
+                let ef = toSampleDataEffect $ fromIntegral $ b2 `shiftR` 1 .&. 3
+                rest <-  if (testBit b0 5) then return [] else doGetSampleData (i+1)
+                return $ (SampleData nd td v nm tm ef) : rest
+
+data SampleDataEffect = SDENone | SDEUp | SDEDown | SDEEnv deriving (Eq)
+
+instance Show SampleDataEffect where
+    showsPrec _ SDENone = showChar '_'
+    showsPrec _ SDEUp = showChar '+'
+    showsPrec _ SDEDown = showChar '-'
+    showsPrec _ SDEEnv = showChar 'E'
+
+toSampleDataEffect :: Int -> SampleDataEffect
+toSampleDataEffect 1 = SDEEnv
+toSampleDataEffect 2 = SDEDown
+toSampleDataEffect 3 = SDEUp
+toSampleDataEffect _ = SDENone

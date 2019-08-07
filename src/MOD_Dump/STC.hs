@@ -111,7 +111,7 @@ printSTCOrnament :: Ornament -> IO ()
 printSTCOrnament orn = do
     putStrLn $ "Ornament: " ++ (show $ ornNumber orn)
     forM_ (ornData orn) $ \i -> do
-        putStr $ showSgnInt 4 i
+        putStr $ showsSgnInt 4 i ""
     putStrLn ""
     putStrLn ""
 
