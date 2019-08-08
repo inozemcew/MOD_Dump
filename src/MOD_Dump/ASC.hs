@@ -432,7 +432,7 @@ getSamples s = do
 printASCSamples :: [Sample] -> IO ()
 printASCSamples s = printColumned (length sampleSep) $ map showSample s
 
-sampleSep = "---+----+------+-----------"
+sampleSep = "---+----+-----+------------"
 
 showSample :: Sample -> [String]
 showSample s = let
@@ -455,7 +455,7 @@ data SampleData = SampleData {
 } deriving (Eq)
 
 instance Show SampleData where
-    showsPrec _ (SampleData nd td v nm tm ef) = showsSgnInt 4 nd . ( " | " ++ ) . showsSgnInt 3 td . (' ':) . shows2 v. (' ':) . showsTM . showsNM . shows ef
+    showsPrec _ (SampleData nd td v nm tm ef) = showsSgnInt 3 nd . ( " | " ++ ) . showsSgnInt 4 td . (' ':) . shows2 v. (' ':) . showsTM . showsNM . shows ef
         where
             showsTM = if tm then ('T':) else ('_':)
             showsNM = if nm then ('N':) else ('_':)
@@ -467,12 +467,12 @@ getSampleData s = do
         where
             doGetSampleData :: Int -> StateT (Int, Int) Get [SampleData]
             doGetSampleData i = do
-                b0 <- lift $ getWord8
+                b0 <- lift $ getInt8
                 b1 <- lift $ getInt8
                 b2 <- lift $ getWord8
                 when (b0 `testBit` 7) $ modify (\(_,x) -> (i,x))
                 when (b0 `testBit` 6) $ modify (\(x,_) -> (x,i))
-                let nd = fromIntegral $ b0 .&. 0x1f
+                let nd = fromIntegral $ if b0 `testBit` 4 then b0 .|. -0x20 else b0 .&. 0x1f
                 let td = fromIntegral $ b1
                 let v =  fromIntegral $ b2 `shiftR` 4 .&. 0xf
                 let tm = not $ b2 `testBit` 0

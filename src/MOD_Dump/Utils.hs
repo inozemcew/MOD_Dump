@@ -29,10 +29,9 @@ shows32 :: Int -> ShowS
 shows32 x = if x<10 then shows x else showChar $ toEnum (x+55)
 
 showsSgnInt :: Int -> Int -> ShowS
-showsSgnInt len n = let s = replicate len ' ' ++ sgn ++ show n in (drop (length s - len) s ++)
-    where
-        sgn = if n < 0 then "" else "+"
-
+showsSgnInt len n
+    | n >= 0 = ('+':) . showsZ (len-1) n
+    | otherwise = ('-':) . showsZ (len-1) (0-n)
 
 
 padLeft :: Char -> Int -> String -> String
