@@ -5,16 +5,22 @@ module MOD_Dump.ASC (readASCModule)  where
     -- +1 = Looping position :: Byte
     -- +2 = Patterns table offset :: Word
     -- +4 = Sample table offset :: Word
-    -- +6 = Ornament table offset :: Word
+    -- +6 = Image table offset :: Word
     -- +8 = Number of positions :: Byte
     -- +9 = Positions :: [Byte]::`Number of positions`
-
+    --
     -- if `Patterns table offset` - `Number of positions` == 72 then
     --      +(`Patterns table offset`) - 44 = Title :: [Char]::20
     --      +(`Patterns table offset`) - 20 = Author :: [Char]::20
     --
     -- +(`Patterns table offset`) = Pattern channels offsets :: [(Word, Word, Word)]
     -- +(`Patterns table offset`) + (`Pattern channel offset`) = Pattern data
+    --
+    -- +(`Sample table offset`) = Samples' offsets :: [Word]::64
+    -- +(`Sample table offset`) + (`Sample offset`) = Sample data
+    --
+    -- +(`Image table offset`) = Images' offsets :: [Word]::64
+    -- +(`Image table offset`) + (`Image offset`) = Image data
 
     -- Pattern data :: [ByteString] =
         --                  | 0x00 .. 0x55 = Note, if volume == 'EN' then followed by byte of envelope period
@@ -55,6 +61,14 @@ module MOD_Dump.ASC (readASCModule)  where
             --  | bit 3 == 1 = noise present
             --  | bit 4..7 = current volume
 
+    -- Image data :: [(Byte,Byte)]
+        -- +0 = | bit 7 == 1 = Loop start point
+        --      | bit 6 == 1 = Loop end point
+        --      | bit 5 == 1 = image end
+        --      | bit 4..0 = noise deviation
+        -- +1 = note deviation
+
+
 
 import MOD_Dump.Module
 import MOD_Dump.Utils
@@ -79,7 +93,7 @@ ascModule m = Module {
     printInfo =  printASCInfo m,
     printPatterns = \w r  -> mapM_ printASCPatterns $ splitBy w $ filterInRange patternNumber r $ patterns m,
     printSamples = \r  -> mapM_ printASCSamples $ splitBy 3 $ filterInRange sampleNumber r  $ samples m,
-    printOrnaments = \r  -> print "Ornament"
+    printOrnaments = \r  -> mapM_ printASCImages $ splitBy 3 $ filterInRange imageNumber r  $ images m
 }
 
 ---------------
@@ -89,6 +103,7 @@ data ASCModule = ASCModule {
         positions :: [Position],
         patterns :: [Pattern],
         samples :: [Sample],
+        images :: [Image],
         title :: String,
         author :: String
     } deriving (Eq, Show)
@@ -106,7 +121,7 @@ getASCModule = do
 
             (d, l, tables, ps, t, a) <- lookAhead $ getHeader ta
             -- sample table can start only 9 or 72 bytes after positions table
-            guard $ any (patternsTable tables - length ps ==) [9,72]
+            guard $ (patternsTable tables - length ps ==) `any` [9,72]
 
             s1 <- peekWord16 $ sampleTable tables
             guard (s1 == 0x40)
@@ -122,12 +137,15 @@ getASCModule = do
 
             samples' <- lookAhead $ getSamples (sampleTable tables)
 
+            images' <- getImages (imageTable tables)
+
             return ASCModule {
                 delay =  d,
                 loopingPos = l,
                 positions = ps,
                 patterns = patterns',
                 samples = samples',
+                images = images',
                 title = t,
                 author = a
             }
@@ -414,37 +432,51 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             return $ x : replicate r emptyNote ++ ns
 
 --------------
-data Sample = Sample {
-    sampleNumber :: Int,
-    sampleData :: [SampleData],
-    sampleLoopStart :: Int,
-    sampleLoopEnd :: Int
+data (InstrumentData d) => Instrument d = Instrument {
+    instrumentNumber :: Int,
+    instrumentData :: [d],
+    instrumentLoopStart :: Int,
+    instrumentLoopEnd :: Int
 } deriving (Eq, Show)
 
-getSamples :: Int -> Get [Sample]
-getSamples s = do
+getInstruments :: (InstrumentData d) => Int -> Get [Instrument d]
+getInstruments s = do
     skip s
     forM [0..31] $ \i -> do
         w <- getWord16le
-        (d,(ls,le)) <- lookAhead $ getSampleData (fromIntegral w - i * 2 - 2)
-        return $ Sample i d ls le
+        (d,(ls,le)) <- lookAhead $ getInstrumentData (fromIntegral w - i * 2 - 2)
+        return $ Instrument i d ls le
 
-printASCSamples :: [Sample] -> IO ()
-printASCSamples s = printColumned (length sampleSep) $ map showSample s
+showInstrument :: (InstrumentData d) => String -> String -> Instrument d -> [String]
+showInstrument title sep instr = (title ++ shows32 (instrumentNumber instr) "")
+                                    : sep
+                                    : [ (shows2 i . (" | " ++). showChar is . showChar ie. (" | "++) $ show d) |
+                                        (i,d) <- zip [0..] $ instrumentData instr,
+                                        let is = if i == instrumentLoopStart instr then '(' else ' ',
+                                        let ie = if i == instrumentLoopEnd instr then ')' else ' ' ]
+                                    ++ [sep]
+
+printInstruments :: (InstrumentData d) => String -> String -> [Instrument d] -> IO ()
+printInstruments title sep is = printColumned (length sep) $ map (showInstrument title sep) is
+
+class Show d => InstrumentData d where
+    getInstrumentData :: Int -> Get ([d], (Int, Int))
+
+--------------
+type Sample = Instrument SampleData
+sampleNumber = instrumentNumber
+sampleData = instrumentData :: Sample -> [SampleData]
+sampleLoopStart = instrumentLoopStart :: Sample -> Int
+sampleLoopEnd = instrumentLoopEnd :: Sample -> Int
+
+getSamples :: Int -> Get [Sample]
+getSamples = getInstruments
 
 sampleSep = "---+----+-----+------------"
+printASCSamples :: [Sample] -> IO ()
+printASCSamples = printInstruments "Sample: " sampleSep
 
-showSample :: Sample -> [String]
-showSample s = let
-                 in
-                    ("Sample: " ++ shows32 (sampleNumber s) "") :
-                    sampleSep :
-                    [ (shows2 i . (" | " ++). showChar ss . showChar sd. (" | "++) $ show d) |
-                        (i,d) <- zip [0..] $ sampleData s,
-                        let ss = if i == sampleLoopStart s then '(' else ' ',
-                        let sd = if i == sampleLoopEnd s then ')' else ' ' ]
-                    ++ [sampleSep]
-
+--------------
 data SampleData = SampleData {
     sampleDataNoiseDev :: Int,
     sampleDataToneDev :: Int,
@@ -459,6 +491,9 @@ instance Show SampleData where
         where
             showsTM = if tm then ('T':) else ('_':)
             showsNM = if nm then ('N':) else ('_':)
+
+instance InstrumentData SampleData where
+    getInstrumentData = getSampleData
 
 getSampleData :: Int -> Get ([SampleData], (Int, Int))
 getSampleData s = do
@@ -494,3 +529,47 @@ toSampleDataEffect 1 = SDEEnv
 toSampleDataEffect 2 = SDEDown
 toSampleDataEffect 3 = SDEUp
 toSampleDataEffect _ = SDENone
+
+--------------
+type Image = Instrument ImageData
+imageNumber = instrumentNumber :: Image -> Int
+imageData = instrumentData :: Image -> [ImageData]
+imageLoopStart = instrumentLoopStart :: Image -> Int
+imageLoopEnd = instrumentLoopEnd :: Image -> Int
+
+getImages :: Int -> Get [Image]
+getImages = getInstruments
+
+imageSep = "---+----+-----+-----"
+printASCImages :: [Image] -> IO ()
+printASCImages = printInstruments "Image: " imageSep
+
+--------------
+data ImageData = ImageData {
+    imageDataNoiseDev :: Int,
+    imageDataToneDev :: Int
+} deriving (Eq)
+
+instance Show ImageData where
+    showsPrec _ (ImageData nd td) = showsSgnInt 3 nd . ( " | " ++ ) . showsSgnInt 4 td
+
+instance InstrumentData ImageData where
+    getInstrumentData = getImageData
+
+getImageData :: Int -> Get ([ImageData], (Int, Int))
+getImageData s = do
+    skip s
+    runStateT (doGetImageData 0) (0,0)
+        where
+            doGetImageData :: Int -> StateT (Int, Int) Get [ImageData]
+            doGetImageData i = do
+                b0 <- lift $ getInt8
+                b1 <- lift $ getInt8
+                when (b0 `testBit` 7) $ modify (\(_,x) -> (i,x))
+                when (b0 `testBit` 6) $ modify (\(x,_) -> (x,i))
+                let nd = fromIntegral $ if b0 `testBit` 4 then b0 .|. -0x20 else b0 .&. 0x1f
+                let td = fromIntegral $ b1
+                rest <-  if (testBit b0 5) then return [] else doGetImageData (i+1)
+                return $ (ImageData nd td ) : rest
+
+
