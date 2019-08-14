@@ -46,20 +46,14 @@ padSLeft = padLeft ' '
 padSRight :: Int -> String -> String
 padSRight = padRight ' '
 
-headS :: [String] -> String
-headS [] = ""
-headS (s:ss) = s
+---------------
+type Range = (Int, Int)
 
+isInRanges :: [Range] ->  Int -> Bool
+isInRanges [] _ = True
+isInRanges r x = any (\(f,t) -> x>=f && x<=t) r
 
-printColumned _ [] = putStrLn ""
-printColumned w l = do
-    let h = intercalate "   " $ map (padSRight w . headS) l
-    putStrLn h
-    let t = map (drop 1) l
-    when (not.null $ concat t) $ printColumned w t
-
-
-------
+---------------
 peekWord16 :: Int -> Get Int
 peekWord16 n = lookAhead $ skip n >> fromIntegral `liftM` getWord16le
 

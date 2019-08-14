@@ -31,10 +31,10 @@ data STCModule = STCModule  {
 
 stcModule :: STCModule -> Module
 stcModule m = Module {
-        printInfo = printSTCModHeader m
-        ,printPatterns = \w r -> mapM_ printSTCPatterns $ splitBy w $ filterInRange patternNumber r $ patterns m
-        ,printSamples = \r -> mapM_ printSTCSample $ filterInRange sampleNumber r $ samples m
-        ,printOrnaments = \r -> mapM_ printSTCOrnament $ filterInRange ornNumber r $ ornaments m
+        showInfo = showSTCModHeader m
+        ,showPatterns   = \rs -> [ showPattern p | p <- patterns m, isInRanges rs $ patternNumber p ]
+        ,showSamples    = \rs -> [ showSample s | s <- samples m, isInRanges rs $ sampleNumber s ]
+        ,showOrnaments  = \rs -> [ showOrnament o | o <- ornaments m, isInRanges rs $ ornNumber o ]
     }
 
 data Tables = Tables {
@@ -82,15 +82,13 @@ getHeader = do
                 return $ Tables (fromIntegral pos) (fromIntegral orn) (fromIntegral pat)
 
 
-printSTCModHeader :: STCModule -> IO ()
-printSTCModHeader m = do
-    putStrLn $ "Song type: Sound Tracker compiled song"
-    putStrLn $ "Song name: " ++ show (identifier m)
-    putStrLn $ "Delay: " ++ show (delay m)
-    forM_ [(length.positions," positions, "), (length.patterns, " patterns, "), (length.samples, " samples, "), (length.ornaments, " ornaments.")] $
-         \(f, s) -> putStr $ shows (f m) s
-    putStrLn ""
-    putStrLn $ "Positions: " ++ concatMap show (positions m)
+showSTCModHeader :: STCModule -> [String]
+showSTCModHeader m =
+    "Song type: Sound Tracker compiled song"
+    : ("Song name: " ++ show (identifier m))
+    : ("Delay: " ++ show (delay m))
+    : [shows (f m) s | (f,s) <- [(length.positions," positions, "), (length.patterns, " patterns, "), (length.samples, " samples, "), (length.ornaments, " ornaments.")] ]
+    ++ ["", "Positions: " ++ concatMap show (positions m)]
 
 -----------------------------------------------------------------------------
 
@@ -103,17 +101,12 @@ getOrnaments :: Int -> Get [Ornament]
 getOrnaments ornamentsCount = replicateM ornamentsCount getOrnament
     where
         getOrnament = do
-            l <- getWord8
-            ds <- replicateM 32 getInt8
-            return $ Ornament (fromIntegral l) (map fromIntegral ds)
+            l <- fromIntegral `liftM` getWord8
+            ds <- replicateM 32 $ fromIntegral `liftM` getInt8
+            return $ Ornament l ds
 
-printSTCOrnament :: Ornament -> IO ()
-printSTCOrnament orn = do
-    putStrLn $ "Ornament: " ++ (show $ ornNumber orn)
-    forM_ (ornData orn) $ \i -> do
-        putStr $ showsSgnInt 3 i ""
-    putStrLn ""
-    putStrLn ""
+showOrnament :: Ornament -> [String]
+showOrnament orn = let o = concat [showsSgnInt 3 i " " |  i <- ornData orn] in [padSRight (length o) $ "Ornament: " ++ (show $ ornNumber orn), o]
 
 -----------------------------------------------------------------------------
 
@@ -128,21 +121,20 @@ getSamples :: Int -> Get [Sample]
 getSamples samplesCount = replicateM samplesCount getSample
     where
         getSample = do
-            n <- getWord8
+            n <- fromIntegral `liftM` getWord8
             d <- replicateM 32 getSampleData
-            p <- getWord8
-            l <- getWord8
-            return $ Sample (fromIntegral n) d (fromIntegral p) (fromIntegral l)
+            p <- fromIntegral `liftM` getWord8
+            l <- fromIntegral `liftM` getWord8
+            return $ Sample n d p l
 
-printSTCSample :: Sample -> IO ()
-printSTCSample s = do
-    putStrLn $ "Sample: " ++ show (sampleNumber s) 
-    putStrLn $ replicate (width*32) '-'
-    printSampleData $ sampleData s
-    putStrLn $ footer (sampleRepeatPos s) (sampleRepeatLen s)
-    putStrLn ""
+showSample :: Sample -> [String]
+showSample s = (padSRight width32 $ "Sample: " ++ show (sampleNumber s))
+    : replicate width32 '-'
+    : showSampleData (sampleData s)
+    ++ [footer (sampleRepeatPos s) (sampleRepeatLen s)]
         where
             width = 3
+            width32 = width * 32
             footer 0 _ = replicate (width*32) '-'
             footer start len = if start + len > 32 then out (start + len - 32) (32 - len) (32 - start) '#' '-'
                                                    else out (start - 1) len (33 - start - len) '-' '#'
@@ -175,15 +167,13 @@ getSampleData = do
     let n = fromIntegral $ b1 .&. 31
     return $ SampleData v nm tm s n
 
-printSampleData :: [SampleData] -> IO ()
-printSampleData ss = do
-    forM_ [1..15] $ \i -> do
-        forM_ ss $ \s -> putStr $ if volume s >= 16 - i then "(*)" else "..."
-        putStrLn ""
-    putStrLn $ concatMap (\s -> ' ' : showMask 'T' (toneMask s) : showMask 'N' (noiseMask s) : "") ss
-    putStrLn $ foldr (\x -> showChar ' ' . showsHex 2 x) "" $ map noise ss
-        where
-            showMask c m = if m then c else '.'
+showSampleData :: [SampleData] -> [String]
+showSampleData ss = [concat [showVolume s i |   s <- ss ] | i <- [1..15]]
+                 ++ [(concatMap (\s -> [' ', showMask 'T' (toneMask s), showMask 'N' (noiseMask s)]) ss)]
+                 ++ [(foldr (\x -> showChar ' ' . showsHex 2 x) "" $ map noise ss)]
+                    where
+                        showMask c m = if m then c else '.'
+                        showVolume s i = if volume s >= 16 - i then "(*)" else "..."
 
 -----------------------------------------------------------------------------
 
@@ -241,20 +231,12 @@ showRow :: (Note, Note, Note) -> String
 showRow (a, b, c) = shows a . (" | " ++) . shows b . (" | " ++) $ show c
 
 showPattern :: Pattern -> [String]
-showPattern p = take (length sep) (show p ++ repeat ' ') : sep : mapPattern (showRow) p ++ [sep,""]
-    where 
-        sep = "---------+----------+---------"
+showPattern p = padSRight (length patternSep) (show p) : patternSep : mapPattern (showRow) p ++ [patternSep,""]
 
-printSTCPatterns :: [Pattern] -> IO ()
-printSTCPatterns ps = printLine $ map (showPattern) ps
-    where
-        printLine [] = putStrLn ""
-        printLine l = do
-            let h = intercalate "   " $ concatMap (take 1) l
-            let t = map (drop 1) l
-            putStrLn h
-            if h == [] then return () else printLine t
+patternSep = "---------+----------+---------"
 
+-- showSTCPatterns :: [Pattern] -> [String]
+-- showSTCPatterns ps = showColumned $ map (showPattern) ps
 -----------------------------------------------------------------------------
 data Pitch = Pitch Int | Mute | None deriving (Eq)
 
@@ -280,8 +262,6 @@ instance Show Note where
     showsPrec _ (Note Mute 0 0 0) = shows Mute . showString " ----"
     showsPrec _ (Note p s o e) = shows p . (' ':) . showsHex 1 s . showsHex 1 o . showsHex 2 e
 
---readNotes :: (Integral i) => i -> B.ByteString -> [Note]
---readNotes addr bs = runGet (evalStateT getNewNotes 0) $ B.drop (fromIntegral addr) bs
 getChannel :: Get [Note]
 getChannel = do
     s <- fromIntegral `liftM` getWord16le

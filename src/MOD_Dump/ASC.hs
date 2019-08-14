@@ -90,10 +90,10 @@ readASCModule e bs = do
 
 ascModule :: ASCModule -> Module
 ascModule m = Module {
-    printInfo =  printASCInfo m,
-    printPatterns = \w r  -> mapM_ printASCPatterns $ splitBy w $ filterInRange patternNumber r $ patterns m,
-    printSamples = \r  -> mapM_ printASCSamples $ splitBy 3 $ filterInRange sampleNumber r  $ samples m,
-    printOrnaments = \r  -> mapM_ printASCImages $ splitBy 3 $ filterInRange imageNumber r  $ images m
+    showInfo =  showASCInfo m
+    , showPatterns  = \rs -> [ showPattern p | p <- patterns m, isInRanges rs $ patternNumber p ]
+    , showSamples   = \rs -> [ showSample s | s <- samples m, isInRanges rs $ sampleNumber s ]
+    , showOrnaments = \rs -> [ showImage i | i <- images m, isInRanges rs $ imageNumber i ]
 }
 
 ---------------
@@ -207,15 +207,14 @@ getMaybeTandAFromPlayer = runMaybeT $ do
                     if w == x then skipWhile' s xs else skipWhile' s s
 
 
-printASCInfo :: ASCModule -> IO ()
-printASCInfo m = do
-    putStrLn $ "Song type: ASC Sound master compiled song"
-    putStrLn $ "Song title: " ++ show (title m)
-    putStrLn $ "Composed: " ++ show (author m)
-    putStrLn $ "Delay: " ++ show (delay m)
-    putStrLn $ "Looping position: " ++ show (loopingPos m)
-
-    putStrLn $ "Positions: " ++ concatMap showPosition (positions m)
+showASCInfo :: ASCModule -> [String]
+showASCInfo m = ["Song type: ASC Sound master compiled song"
+                ,"Song title: " ++ show (title m)
+                , "Composed: " ++ show (author m)
+                , "Delay: " ++ show (delay m)
+                , "Looping position: " ++ show (loopingPos m)
+                ,"Positions: " ++ concatMap showPosition (positions m)
+                ]
 
 -----------------------------------------------
 
@@ -256,8 +255,8 @@ getPatterns offset count = do
         chC <-lookAhead $ getChannel (fromIntegral c - i6)
         return $ Pattern i (map shared $ transpose [chA, chB, chC]) chA chB chC
 
-printASCPatterns :: [Pattern] -> IO ()
-printASCPatterns ps = printColumned (length patternSep) $ map (showPattern) ps
+-- showASCPatterns :: [Pattern] -> [String]
+-- showASCPatterns ps = showColumned $ map (showPattern) ps
 
 -------------------------------------------------------------
 
@@ -448,7 +447,7 @@ getInstruments s = do
         return $ Instrument i d ls le
 
 showInstrument :: (InstrumentData d) => String -> String -> Instrument d -> [String]
-showInstrument title sep instr = (title ++ shows32 (instrumentNumber instr) "")
+showInstrument title sep instr = padSRight (length sep) (title ++ shows32 (instrumentNumber instr) "")
                                     : sep
                                     : [ (shows2 i . (" | " ++). showChar is . showChar ie. (" | "++) $ show d) |
                                         (i,d) <- zip [0..] $ instrumentData instr,
@@ -456,8 +455,8 @@ showInstrument title sep instr = (title ++ shows32 (instrumentNumber instr) "")
                                         let ie = if i == instrumentLoopEnd instr then ')' else ' ' ]
                                     ++ [sep]
 
-printInstruments :: (InstrumentData d) => String -> String -> [Instrument d] -> IO ()
-printInstruments title sep is = printColumned (length sep) $ map (showInstrument title sep) is
+-- showInstruments :: (InstrumentData d) => String -> String -> [Instrument d] -> [String]
+-- showInstruments title sep is = showColumned $ map (showInstrument title sep) is
 
 class Show d => InstrumentData d where
     getInstrumentData :: Int -> Get ([d], (Int, Int))
@@ -473,8 +472,7 @@ getSamples :: Int -> Get [Sample]
 getSamples = getInstruments
 
 sampleSep = "---+----+-----+------------"
-printASCSamples :: [Sample] -> IO ()
-printASCSamples = printInstruments "Sample: " sampleSep
+showSample = showInstrument "Sample: " sampleSep
 
 --------------
 data SampleData = SampleData {
@@ -541,8 +539,7 @@ getImages :: Int -> Get [Image]
 getImages = getInstruments
 
 imageSep = "---+----+-----+-----"
-printASCImages :: [Image] -> IO ()
-printASCImages = printInstruments "Image: " imageSep
+showImage = showInstrument "Image: " imageSep
 
 --------------
 data ImageData = ImageData {

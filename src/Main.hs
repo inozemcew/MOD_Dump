@@ -18,28 +18,28 @@ data Options = Options { optHelp :: Bool
                         ,optWidth :: Int
                     }  deriving (Eq, Show)
 
-defaultOptions = Options False False False [] [] [] 4
+defaultOptions = Options False False False [] [] [] 128
 
 optDefs :: [ OptDescr (State Options () ) ]
 optDefs = [ Option "h?" ["help","info"] (NoArg (modify $ \x -> x{optHelp = True})) "Print this help message"
           , Option "a"  ["all"]         (NoArg (modify $ \x -> x{optAll = True}))  "Print all sections of module"
           , Option "b"  ["brief"]       (NoArg (modify $ \x -> x{optPartial = True})) "Print only header and some parts specified explicitly."
-          , Option "s"  ["samples"]     (OptArg getSampleRange "FROM-TO") "Print samples in range FROM-TO" 
-          , Option "o"  ["ornaments"]   (OptArg getOrnamentRange "FROM-TO") "Print ornamets in range FROM-TO"
-          , Option "p"  ["patterns"]    (OptArg getPatternRange "FROM-TO") "Print patterns in range FROM-TO"
-          , Option "w"  ["width"]       (ReqArg getWidth "WIDTH") "Set columns count for patterns print"]
+          , Option "s"  ["samples"]     (OptArg readSampleRange "FROM-TO") "Print samples in range FROM-TO"
+          , Option "o"  ["ornaments"]   (OptArg readOrnamentRange "FROM-TO") "Print ornamets in range FROM-TO"
+          , Option "p"  ["patterns"]    (OptArg readPatternRange "FROM-TO") "Print patterns in range FROM-TO"
+          , Option "w"  ["width"]       (ReqArg readWidth "WIDTH") "Set columns count for patterns print"]
     where
-        getSampleRange :: Maybe String -> State Options ()
-        getSampleRange ms   = modify $ \x -> x { optSamples = optSamples x ++ getRange ms, optPartial = True}
+        readSampleRange :: Maybe String -> State Options ()
+        readSampleRange ms   = modify $ \x -> x { optSamples = optSamples x ++ readRange ms, optPartial = True}
 
-        getOrnamentRange :: Maybe String -> State Options ()
-        getOrnamentRange ms = modify $ \x -> x { optOrnament = optOrnament x ++ getRange ms, optPartial = True}
+        readOrnamentRange :: Maybe String -> State Options ()
+        readOrnamentRange ms = modify $ \x -> x { optOrnament = optOrnament x ++ readRange ms, optPartial = True}
 
-        getPatternRange :: Maybe String -> State Options ()
-        getPatternRange ms  = modify $ \x -> x { optPatterns = optPatterns x ++ getRange ms, optPartial = True}
+        readPatternRange :: Maybe String -> State Options ()
+        readPatternRange ms  = modify $ \x -> x { optPatterns = optPatterns x ++ readRange ms, optPartial = True}
 
-        getWidth :: String -> State Options ()
-        getWidth s          = modify $ \x -> x { optWidth = getValue s}
+        readWidth :: String -> State Options ()
+        readWidth s          = modify $ \x -> x { optWidth = readValue s}
 
 moduleReaders :: [String -> B.ByteString -> Maybe Module]
 moduleReaders = [readSTCModule, readASCModule]
@@ -63,33 +63,34 @@ doPrint _ Nothing = do
 doPrint opts (Just m) = do
     printInfo m
     let a = optAll opts || (not (optPartial opts) && null (optSamples opts)  && null (optOrnament opts) && null (optPatterns opts) )
+    let w = optWidth opts
     when (optAll opts || (not.null) (optSamples opts)) $
-        printSamples m (optSamples opts)
+        printSamples m w (optSamples opts)
     when (optAll opts || (not.null) (optOrnament opts)) $
-        printOrnaments m (optOrnament opts)
+        printOrnaments m w (optOrnament opts)
     when (not $ optPartial opts && null (optPatterns opts) ) $
-        printPatterns m (optWidth opts) (optPatterns opts)
+        printPatterns m w (optPatterns opts)
 
 select a [] _ xs = if a then xs else []
 select _ nums f xs = [ x | x <- xs, let i = f x, any (\(f,t) -> i>=f && i<=t) nums]
 
 
-getRange :: Maybe String -> [(Int, Int)]
-getRange Nothing = [(0,maxBound)]
-getRange (Just s) = map getRange' $ breakBy ',' s
+readRange :: Maybe String -> [(Int, Int)]
+readRange Nothing = [(0,maxBound)]
+readRange (Just s) = map readRange' $ breakBy ',' s
     where
         breakBy _ "" = []
         breakBy c (',':s) = breakBy c s
         breakBy c s = let (h, t) = break (==c) s in h : breakBy c t
-        getRange' s = let   (f,t) = break (=='-') s
-                            ff = if f == "" then 0 else getValueDef 0 f
+        readRange' s = let  (f,t) = break (=='-') s
+                            ff = if f == "" then 0 else readValueDef 0 f
                             tt | t == ""  = ff 
                                | t == "-" = maxBound 
-                               | otherwise = getValueDef ff $ tail t
+                               | otherwise = readValueDef ff $ tail t
                         in (ff, tt)
                             
-getValue :: String -> Int                           
-getValue = getValueDef (-1) 
+readValue :: String -> Int
+readValue = readValueDef (-1)
 
-getValueDef :: Int -> String -> Int
-getValueDef d s = let v = reads s in if null v then d else fst $ head v                     
+readValueDef :: Int -> String -> Int
+readValueDef d s = let v = reads s in if null v then d else fst $ head v
