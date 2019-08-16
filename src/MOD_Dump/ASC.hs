@@ -83,10 +83,7 @@ import GHC.Word
 import Data.List(intercalate, transpose)
 
 readASCModule :: String -> B.ByteString -> Maybe Module
-readASCModule e bs = do
-    guard (e == ".asc" || e ==".C")
-    m <- either (const Nothing) (\(_,_,x) -> Just x) $ runGetOrFail getASCModule bs
-    return $ ascModule m
+readASCModule = readModule getASCModule ascModule [".asc",".C"]
 
 ascModule :: ASCModule -> Module
 ascModule m = Module {
@@ -219,7 +216,7 @@ showASCInfo m = ["Song type: ASC Sound master compiled song"
 -----------------------------------------------
 
 type Position = Int
-showPosition pn = '{':show pn ++ "}"
+showPosition pn = '{':shows pn "}"
 
 ---------------
 data Pattern = Pattern Int [Shared] Channel Channel Channel deriving (Eq)

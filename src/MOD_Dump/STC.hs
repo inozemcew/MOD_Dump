@@ -12,12 +12,8 @@ import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
 
 
-
 readSTCModule :: FilePath -> B.ByteString -> Maybe Module
-readSTCModule e bs = do
-    guard (e == ".stc")
-    m <- either (const Nothing) (\(_,_,x) -> Just x) $ runGetOrFail getSTCModule bs
-    return $ stcModule m
+readSTCModule = readModule getSTCModule stcModule [".stc"]
 
 data STCModule = STCModule  {
         delay :: Int,

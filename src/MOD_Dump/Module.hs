@@ -2,6 +2,9 @@ module MOD_Dump.Module where
 
 import Data.List
 import MOD_Dump.Utils
+import Data.Binary.Get
+import qualified Data.ByteString.Lazy.Char8 as B
+import Control.Monad
 
 data Module = Module {
         showInfo :: [String],
@@ -10,6 +13,15 @@ data Module = Module {
         showPatterns :: [Range] -> [[String]]
     }
 
+---------------
+
+readModule :: Get a -> (a -> Module) -> [String] -> String -> B.ByteString -> Maybe Module
+readModule mGetter fMake exts ext bs = do
+    guard (ext `elem` exts)
+    m <- either (const Nothing) (\(_,_,x) -> Just x) $ runGetOrFail mGetter bs
+    return $ fMake m
+
+---------------
 printInfo :: Module -> IO ()
 printInfo m = putStrLn $ unlines $ showInfo m
 
