@@ -2,21 +2,21 @@ module Main where
 import MOD_Dump.Module
 import MOD_Dump.STC
 import MOD_Dump.ASC
+import MOD_Dump.Utils
 import qualified Data.ByteString.Lazy as B
 import System.Console.GetOpt
 import System.Environment
 import Control.Monad.State
 import System.FilePath (takeExtension)
 
---data Options = OptHelp | OptAll | OptSamples (Int, Int) | OptOrnament (Int, Int) | OptPatterns (Int, Int) | OptWidth Int deriving (Eq,Show)
 data Options = Options { optHelp :: Bool
-                        ,optAll  :: Bool
-                        ,optPartial :: Bool
-                        ,optSamples :: [(Int,Int)]
-                        ,optOrnament :: [(Int,Int)]
-                        ,optPatterns :: [(Int,Int)]
-                        ,optWidth :: Int
-                    }  deriving (Eq, Show)
+                       , optAll  :: Bool
+                       , optPartial :: Bool
+                       , optSamples :: [(Int,Int)]
+                       , optOrnament :: [(Int,Int)]
+                       , optPatterns :: [(Int,Int)]
+                       , optWidth :: Int
+                       } deriving (Eq, Show)
 
 defaultOptions = Options False False False [] [] [] 128
 
@@ -27,7 +27,8 @@ optDefs = [ Option "h?" ["help","info"] (NoArg (modify $ \x -> x{optHelp = True}
           , Option "s"  ["samples"]     (OptArg readSampleRange "FROM-TO") "Print samples in range FROM-TO"
           , Option "o"  ["ornaments"]   (OptArg readOrnamentRange "FROM-TO") "Print ornamets in range FROM-TO"
           , Option "p"  ["patterns"]    (OptArg readPatternRange "FROM-TO") "Print patterns in range FROM-TO"
-          , Option "w"  ["width"]       (ReqArg readWidth "WIDTH") "Set columns count for patterns print"]
+          , Option "w"  ["width"]       (ReqArg readWidth "WIDTH") "Set columns count for patterns print"
+          ]
     where
         readSampleRange :: Maybe String -> State Options ()
         readSampleRange ms   = modify $ \x -> x { optSamples = optSamples x ++ readRange ms, optPartial = True}
@@ -41,7 +42,7 @@ optDefs = [ Option "h?" ["help","info"] (NoArg (modify $ \x -> x{optHelp = True}
         readWidth :: String -> State Options ()
         readWidth s          = modify $ \x -> x { optWidth = readValue s}
 
-moduleReaders :: [String -> B.ByteString -> Maybe Module]
+moduleReaders :: [String -> B.ByteString -> Maybe ShowModule]
 moduleReaders = [readSTCModule, readASCModule]
 
 main :: IO ()
@@ -56,7 +57,7 @@ main = do
             let m = foldr1 mplus [ f (takeExtension i) bs | f <- moduleReaders ]
             doPrint opts m
 
-doPrint :: Options -> Maybe Module -> IO ()
+doPrint :: Options -> Maybe ShowModule -> IO ()
 doPrint _ Nothing = do
     putStrLn "No module can be printed."
     putStrLn $ usageInfo "Program help" optDefs
@@ -89,8 +90,3 @@ readRange (Just s) = map readRange' $ breakBy ',' s
                                | otherwise = readValueDef ff $ tail t
                         in (ff, tt)
                             
-readValue :: String -> Int
-readValue = readValueDef (-1)
-
-readValueDef :: Int -> String -> Int
-readValueDef d s = let v = reads s in if null v then d else fst $ head v

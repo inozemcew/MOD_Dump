@@ -61,3 +61,17 @@ skipTo :: Int -> Get ()
 skipTo n = do
     c <- bytesRead
     skip (n - fromIntegral c)
+
+---------------
+
+lookupDef :: (Eq a) =>  b -> [(a, b)] -> a -> b
+lookupDef d xs x = maybe d id $ lookup x xs
+
+lookupChar :: (Eq a) => Char -> [(a, Char)] -> a -> ShowS
+lookupChar d xs x = maybe (d:) showChar $ lookup x xs
+
+readValue :: String -> Int
+readValue = readValueDef (-1)
+
+readValueDef :: Int -> String -> Int
+readValueDef d s = let v = reads s in if null v then d else fst $ head v
