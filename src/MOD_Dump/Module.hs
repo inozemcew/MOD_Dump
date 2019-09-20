@@ -1,6 +1,6 @@
 module MOD_Dump.Module
     ( readModule, printInfo, printPatterns, printSamples, printOrnaments
-    , Module, newModule, moduleExts, getData, showHeader, showPattern, showSample, showOrnament
+    , Module, newModule, moduleExts, getData, showHeader, showRow, patternSep, showSample, showOrnament
     , ShowModule, newShowModule, showInfo, showSamples, showOrnaments, showPatterns
     ) where
 
@@ -23,28 +23,29 @@ newShowModule m md = AShowModule --{ showInfo = [], showSamples = const [], show
     { showInfo =  showHeader m md
     , showPatterns  = \rs -> [ showPattern m p | p <- patterns md, isInRanges rs $ patternNumber p ]
     , showSamples   = \rs -> [ showSample m s | s <- samples md, isInRanges rs $ sampleNumber s ]
-    , showOrnaments = \rs -> [ showOrnament m o | o <- ornaments md, isInRanges rs $ ornamentNumber o ]
-    }
-
+    , showOrnaments = \rs -> [ showOrnament m o | o <- ornaments md, isInRanges rs $ ornamentNumber o ] }
+        where
+            showPattern m p =  padSRight (length sep) (show p) : sep : map (showRow m) (patternRows p) ++ [sep,""]
+            sep = patternSep m
 
 data Module = AModule
     { moduleExts :: [String]
     , getData :: Get ModuleData
     , showHeader :: ModuleData -> [String]
-    , showPattern :: Pattern -> [String]
+    , showRow :: Row -> String
+    , patternSep :: String
     , showSample :: Sample -> [String]
-    , showOrnament :: Ornament -> [String]
-    }
+    , showOrnament :: Ornament -> [String] }
 
 newModule :: Module
 newModule = AModule
     { moduleExts = []
-    , getData = fail "Abstract"
-    , showHeader = const []
-    , showPattern = const []
-    , showSample = const []
-    , showOrnament = const []
-    }
+    , getData = return newModuleData
+    , showHeader = lines.show
+    , showRow = show -- const ["No patterns"]
+    , patternSep = replicate 80 '-'
+    , showSample = lines.show
+    , showOrnament = lines.show }
 ---------------
 
 readModule :: Module -> String -> B.ByteString -> Maybe ShowModule
@@ -71,17 +72,20 @@ printSections width s = putStrLn $ unlines $ map showColumned $ splitOn width s
 
 showColumned :: [[String]] -> String
 showColumned [] = []
-showColumned l = unlines $ showColumned' (length $ headS $ head l) l
+showColumned l = unlines $ showColumned' l
     where
+
+        ws = map (length . headS) l
+
         headS :: [String] -> String
         headS [] = ""
         headS (s:ss) = s
 
-        showColumned' w l =  let
-                                 h = intercalate "   " $ map (padSRight w . headS) l
+        showColumned' l =  let
+                                 h = intercalate "   " $ zipWith (\s w -> padSRight w $ headS s) l ws
                                  t = map (drop 1) l
-                                in
-                                    h : if (not.null $ concat t) then showColumned' w t else []
+                           in
+                                 h : if (not.null $ concat t) then showColumned' t else []
 
 splitOn :: Int -> [[String]] -> [[[String]]]
 splitOn _ [] = []
