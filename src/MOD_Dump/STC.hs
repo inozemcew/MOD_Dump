@@ -22,7 +22,8 @@ stcModule = newModule
     { moduleExts = [".stc"]
     , getData = getSTCModule
     , showHeader = showSTCModHeader
-    , showPattern = showSTCPattern
+    , showRow = showSTCRow
+    , patternSep = "---+----------+----------+---------"
     , showSample = showSTCSample
     , showOrnament = showSTCOrnament
     }
@@ -67,12 +68,14 @@ getHeader = do
 
 
 showSTCModHeader :: ModuleData -> [String]
-showSTCModHeader m =
-    "Song type: Sound Tracker compiled song"
-    : ("Song name: " ++ show (title m))
-    : ("Delay: " ++ show (delay m))
-    : [shows (f m) s | (f,s) <- [(length.positions," positions, "), (length.patterns, " patterns, "), (length.samples, " samples, "), (length.ornaments, " ornaments.")] ]
-    ++ ["", "Positions: " ++ foldr showsPosition "" (positions m)]
+showSTCModHeader m = [ "Song type: Sound Tracker compiled song"
+                     , "Song name: " ++ show (title m)
+                     , "Delay: " ++ show (delay m) ]
+                   ++ [shows (f m) s | (f,s) <- [(length.positions," positions, ")
+                                                , (length.patterns, " patterns, ")
+                                                , (length.samples, " samples, ")
+                                                , (length.ornaments, " ornaments.")] ]
+                   ++ ["", "Positions: " ++ foldr showsPosition "" (positions m)]
 
 -----------------------------------------------------------------------------
 
@@ -181,13 +184,11 @@ getPattern n = do
             return $ newPattern {patternNumber = n, patternRows = makeRows [chA,chB,chC] }
 
 
-showRow :: Row -> String
-showRow r = foldr id "" $ intersperse (" | " ++) $ shows2 (rowNumber r) : ( map showsNote $ rowNotes r )
+showSTCRow :: Row -> String
+showSTCRow r = foldr id "" $ intersperse (" | " ++) $ shows2 (rowNumber r) : ( map showsNote $ rowNotes r )
 
-showSTCPattern :: Pattern -> [String]
-showSTCPattern p = padSRight (length patternSep) (show p) : patternSep : map showRow (patternRows p) ++ [patternSep,""]
-
-patternSep = "---+----------+----------+---------"
+--showSTCPattern :: Pattern -> [String]
+--showSTCPattern p = padSRight (length patternSep) (show p) : patternSep : map showRow (patternRows p) ++ [patternSep,""]
 
 -----------------------------------------------------------------------------
 
@@ -201,14 +202,14 @@ noteNames = ["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"]
 -----------------------------------------------------------------------------
 
 showsNote :: Note -> ShowS
-showsNote n = if (isPitch p) then showsPitch p . (' ':) . showsHex 1 (noteSample n) . showsOrnEnv
+showsNote n = if (isPitch p) then showsPitch p . (' ':) . showsHex 1 (maybe 0 id $ noteSample n) . showsOrnEnv
     else
         showsPitch p . showString " ----"
     where
         p = notePitch n
         o = noteOrnament n
         showsOrnEnv = if (noteEnvForm n == EnvFormNone)
-                         then ((if o == 0 then "00" else "F0") ++ ) . showsHex 1 o
+                         then ((if o == Nothing then "00" else "F0") ++ ) . showsHex 1 (maybe 0 id o)
                          else showsHex 1 (fromEnum $ noteEnvForm n) . showsHex 2 (noteEnvFreq n)
 
 
@@ -230,9 +231,9 @@ getChannel = do
                     | x <= 0x5f = yieldNote $ n{notePitch = toEnum $ x + fromEnum pitchC1}
                     | x == 0x80 = yieldNote $ n{notePitch = Pause}
                     | x == 0x81 = yieldNote $ n{notePitch = NoNote}
-                    | x == 0x82 = getNotes $ n{noteOrnament = 0, noteEnvForm = EnvFormNone }
-                    | x >= 0x60 && x <= 0x6f = getNotes $ n{noteSample = x - 0x60}
-                    | x >= 0x70 && x <= 0x7f = getNotes $ n{noteOrnament = x - 0x70}
+                    | x == 0x82 = getNotes $ n{noteOrnament = Just 0, noteEnvForm = EnvFormNone }
+                    | x >= 0x60 && x <= 0x6f = getNotes $ n{ noteSample = Just (x - 0x60) }
+                    | x >= 0x70 && x <= 0x7f = getNotes $ n{ noteOrnament = Just (x - 0x70) }
                     | x >= 0x83 && x <= 0x8e = do
                         o <- lift getWord8
                         getNotes $ n{noteEnvForm = toEnum (x - 0x80), noteEnvFreq = fromIntegral o}

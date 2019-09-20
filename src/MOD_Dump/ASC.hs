@@ -90,7 +90,8 @@ ascModule = newModule
     { moduleExts = [".asc",".C"]
     , getData = getASCModuleData
     , showHeader = showASCHeader
-    , showPattern = showASCPattern
+    , showRow = showASCRow
+    , patternSep = "---+--------+------------+------------+----------- "
     , showSample = showASCSample
     , showOrnament = showASCImage
     }
@@ -205,10 +206,8 @@ showASCHeader m = ["Song type: ASC Sound master compiled song"
 showPosition pn = '{' : shows (positionNumber pn) "}"
 
 ---------------
-showASCPattern :: Pattern -> [String]
-showASCPattern p = padSRight (length patternSep) (show p) : patternSep : map showRow (patternRows p) ++ [patternSep, ""]
-
-patternSep = "---+--------+------------+------------+----------- "
+--showASCPattern :: Pattern -> [String]
+--showASCPattern p = padSRight (length patternSep) (show p) : patternSep : map showRow (patternRows p) ++ [patternSep, ""]
 
 getPatterns:: Int -> Int -> Get [Pattern]
 getPatterns offset count = do
@@ -223,8 +222,8 @@ getPatterns offset count = do
         chC <-lookAhead $ getChannel (fromIntegral c - i6)
         return $ newPattern { patternNumber = i, patternRows = makeRowsWithShared makeShared [chA, chB, chC] }
 
-showRow :: Row -> String
-showRow r = header . (\x -> foldr showsNote x $ rowNotes r) $ ""
+showASCRow :: Row -> String
+showASCRow r = header . (\x -> foldr showsNote x $ rowNotes r) $ ""
     where
         s = rowShared r
         header = shows2 (rowNumber r) . (" | " ++)
@@ -267,7 +266,7 @@ makeShared abc = newShared {
     sharedNoise = noise
 }
     where
-        findF f a x = if noteVolume x == 0 then f x else a
+        findF f a x = if noteVolume x == Just 0 then f x else a
         eFreq = foldl (findF noteEnvFreq) noEnvFreq abc
         eForm = foldl (findF noteEnvForm) noEnvForm abc
         maskRShift1 m = m { channelMaskValue = channelMaskValue m `div` 2 + 4 }
@@ -278,16 +277,16 @@ makeShared abc = newShared {
 ---------------
 showsNote :: Note -> ShowS
 showsNote note = showsNoteCmd (noteCmd note) .(' ':). showsPitch pitch .
-    if isPitch pitch then (' ':). shows32 (noteSample note)
-                         .(' ':). shows32 (noteOrnament note)
+    if isPitch pitch then (' ':). shows32 (maybe 0 id $ noteSample note)
+                         .(' ':). shows32 (maybe 0 id $ noteOrnament note)
                          .(' ':). showsVolume (noteVolume note)
                          .(' ':)
                      else (" _ _ __ "++)
         where
             pitch = notePitch note
-            showsVolume v
-                | v == 0 = ("EN" ++)
-                | otherwise = shows2 v
+            showsVolume Nothing = showString "--"
+            showsVolume (Just 0) = showString "EN"
+            showsVolume (Just v) = shows2 v
 
 ---------------
 getChannel :: Int -> Get Channel   --- Empty channel returns empty list - error!!
@@ -300,41 +299,41 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
 
         switch n x
             | x == 255 = return []                                              -- End of pattern
-            | x <= 0x55 = yieldNote $ n{notePitch = toEnum $ x + fromEnum pitchAS0}                    -- Note, may be followed by env period if volume='EN'
-            | x >= 0x56 && x <= 0x5d = yieldNote' $ n{notePitch = NoNote}         -- No note, just placeholder for empty channel
-            | x == 0x5e = yieldNote' $ n{notePitch = Release}                   -- Release sample
-            | x == 0x5f = yieldNote' $ n{notePitch = Pause}                     -- Pause
-            | x >= 0x60 && x <= 0x9f = do                                       -- Skip x rows after note or relese or pause
+            | x <= 0x55 = yieldNote $ n{ notePitch = toEnum $ x + fromEnum pitchAS0 } -- Note, may be followed by env period if volume='EN'
+            | x >= 0x56 && x <= 0x5d = yieldNote' $ n{ notePitch = NoNote }         -- No note, just placeholder for empty channel
+            | x == 0x5e = yieldNote' $ n{ notePitch = Release }                   -- Release sample
+            | x == 0x5f = yieldNote' $ n{ notePitch = Pause }                     -- Pause
+            | x >= 0x60 && x <= 0x9f = do                                         -- Skip x rows after note or relese or pause
                 put (x - 0x60)
                 getNotes n
-            | x >= 0xa0 && x <= 0xbf = getNotes $ n{noteSample = x - 0xa0}      -- Set current sample
-            | x >= 0xc0 && x <= 0xdf = getNotes $ n{noteOrnament = x - 0xc0}    -- Set current image
-            | x >= 0xe0 && x <= 0xef = getNotes $ n{noteVolume = x - 0xe0}      -- Set current volume
-            | x == 0xf0 = do                                                    -- Set noise period
+            | x >= 0xa0 && x <= 0xbf = getNotes $ n{ noteSample = Just (x - 0xa0) }      -- Set current sample
+            | x >= 0xc0 && x <= 0xdf = getNotes $ n{ noteOrnament = Just (x - 0xc0) }    -- Set current image
+            | x >= 0xe0 && x <= 0xef = getNotes $ n{ noteVolume = Just (x - 0xe0) }      -- Set current volume
+            | x == 0xf0 = do                                                             -- Set noise period
                 noise <- lift getWord8
                 getNotes $ n{noteNoise = toNoise noise}
-            | x == 0xf1 = getNotes $ n{noteCmd = NoteCmdHldSample}              -- Hold sample command
-            | x == 0xf2 = getNotes $ n{noteCmd = NoteCmdHldImage}               -- Hold image command
-            | x == 0xf3 = getNotes $ n{noteCmd = NoteCmdHldInstr}               -- Hold sample and image
-            | x == 0xf4 = setCmd NoteCmdDelay                                   -- Set delay command
-            | x == 0xf5 = setCmd NoteCmdGlisUp                                  -- GlisUp command
-            | x == 0xf6 = setCmd NoteCmdGlisDn                                  -- GlisDn command
-            | x == 0xf7 = setCmd NoteCmdPortaR                                  -- Port.S+ command
-            | x == 0xf8 = getNotes $ n{noteEnvForm = EnvFormRepDecay}           -- Set envelope form 8 '\'
-            | x == 0xf9 = setCmd NoteCmdPorta                                   -- Port.S- command
-            | x == 0xfa = getNotes $ n{noteEnvForm = EnvFormRepDecayAttack}     -- Set envelope form 10 'V'
-            | x == 0xfb = lift getWord8 >> getNotes n                           -- Unknown command, consumes 1 byte
-            | x == 0xfc = getNotes $ n{noteEnvForm = EnvFormRepAttack}          -- Set envelope form 12 '/'
-            | x == 0xfe = getNotes $ n{noteEnvForm = EnvFormRepAttackDecay}     -- Set envelope form 14 '^'
+            | x == 0xf1 = getNotes $ n{ noteCmd = NoteCmdHldSample }              -- Hold sample command
+            | x == 0xf2 = getNotes $ n{ noteCmd = NoteCmdHldImage }               -- Hold image command
+            | x == 0xf3 = getNotes $ n{ noteCmd = NoteCmdHldInstr }               -- Hold sample and image
+            | x == 0xf4 = setCmd NoteCmdDelay                                     -- Set delay command
+            | x == 0xf5 = setCmd NoteCmdGlisUp                                    -- GlisUp command
+            | x == 0xf6 = setCmd NoteCmdGlisDn                                    -- GlisDn command
+            | x == 0xf7 = setCmd NoteCmdPortaR                                    -- Port.S+ command
+            | x == 0xf8 = getNotes $ n{ noteEnvForm = EnvFormRepDecay }           -- Set envelope form 8 '\'
+            | x == 0xf9 = setCmd NoteCmdPorta                                     -- Port.S- command
+            | x == 0xfa = getNotes $ n{ noteEnvForm = EnvFormRepDecayAttack }     -- Set envelope form 10 'V'
+            | x == 0xfb = lift getWord8 >> getNotes n                             -- Unknown command, consumes 1 byte
+            | x == 0xfc = getNotes $ n{ noteEnvForm = EnvFormRepAttack }          -- Set envelope form 12 '/'
+            | x == 0xfe = getNotes $ n{ noteEnvForm = EnvFormRepAttackDecay }     -- Set envelope form 14 '^'
             | otherwise = getNotes n
             where
                 setCmd c = do
                     d <- lift getWord8
-                    getNotes $ n{noteCmd = c $ fromIntegral d}
+                    getNotes $ n{ noteCmd = c $ fromIntegral d }
 
         yieldNote x = do
-            e <- if (noteVolume x == 0)
-                    then lift $ toEnvFreq `liftM` getWord8
+            e <- if (noteVolume x == Just 0)
+                    then lift $ toEnvFreq <$> getWord8
                     else return $ noteEnvFreq x
             yieldNote' $ x{noteEnvFreq = e}
 

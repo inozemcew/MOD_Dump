@@ -2,6 +2,7 @@ module Main where
 import MOD_Dump.Module
 import MOD_Dump.STC
 import MOD_Dump.ASC
+import MOD_Dump.PT2
 import MOD_Dump.Utils
 import qualified Data.ByteString.Lazy as B
 import System.Console.GetOpt
@@ -43,7 +44,7 @@ optDefs = [ Option "h?" ["help","info"] (NoArg (modify $ \x -> x{optHelp = True}
         readWidth s          = modify $ \x -> x { optWidth = readValue s}
 
 moduleReaders :: [String -> B.ByteString -> Maybe ShowModule]
-moduleReaders = [readSTCModule, readASCModule]
+moduleReaders = [readSTCModule, readASCModule, readPT2Module]
 
 main :: IO ()
 main = do
@@ -54,12 +55,12 @@ main = do
     if needHelp then putStrLn $ usageInfo "Program help" optDefs
         else forM_ p $ \i -> do
             bs <- B.readFile i
-            let m = foldr1 mplus [ f (takeExtension i) bs | f <- moduleReaders ]
+            let m = msum [ f (takeExtension i) bs | f <- moduleReaders ]
             doPrint opts m
 
 doPrint :: Options -> Maybe ShowModule -> IO ()
 doPrint _ Nothing = do
-    putStrLn "No module can be printed."
+    putStrLn "Module cannot be printed."
     putStrLn $ usageInfo "Program help" optDefs
 doPrint opts (Just m) = do
     printInfo m
