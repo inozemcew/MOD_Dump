@@ -1,6 +1,6 @@
 module MOD_Dump.Module
     ( readModule, printInfo, printPatterns, printSamples, printOrnaments
-    , Module, newModule, moduleExts, getData, showHeader, showRow, patternSep, showSample, showOrnament
+    , Module, newModule, moduleExts, getData, showHeader, showRow, patternSep, showSample, showOrnament, showsPosition
     , ShowModule, newShowModule, showInfo, showSamples, showOrnaments, showPatterns
     ) where
 
@@ -19,8 +19,8 @@ data ShowModule = AShowModule
     }
 
 newShowModule :: Module -> ModuleData -> ShowModule
-newShowModule m md = AShowModule --{ showInfo = [], showSamples = const [], showOrnaments = const [], showPatterns = const [] }
-    { showInfo =  showHeader m md
+newShowModule m md = AShowModule 
+    { showInfo =  showHeader md (showsPosition m)
     , showPatterns  = \rs -> [ showPattern m p | p <- patterns md, isInRanges rs $ patternNumber p ]
     , showSamples   = \rs -> [ showSample m s | s <- samples md, isInRanges rs $ sampleNumber s ]
     , showOrnaments = \rs -> [ showOrnament m o | o <- ornaments md, isInRanges rs $ ornamentNumber o ] }
@@ -31,21 +31,22 @@ newShowModule m md = AShowModule --{ showInfo = [], showSamples = const [], show
 data Module = AModule
     { moduleExts :: [String]
     , getData :: Get ModuleData
-    , showHeader :: ModuleData -> [String]
     , showRow :: Row -> String
     , patternSep :: String
     , showSample :: Sample -> [String]
-    , showOrnament :: Ornament -> [String] }
+    , showOrnament :: Ornament -> [String] 
+    , showsPosition :: Position -> ShowS
+    }
 
 newModule :: Module
 newModule = AModule
     { moduleExts = []
     , getData = return newModuleData
-    , showHeader = lines.show
-    , showRow = show -- const ["No patterns"]
+    , showRow = show 
     , patternSep = replicate 80 '-'
     , showSample = lines.show
-    , showOrnament = lines.show }
+    , showOrnament = lines.show 
+    , showsPosition = \p -> ('{':) . shows (positionNumber p) . ('}':)}
 ---------------
 
 readModule :: Module -> String -> B.ByteString -> Maybe ShowModule
@@ -64,6 +65,23 @@ printPatterns, printSamples, printOrnaments :: ShowModule -> Int -> [Range] -> I
 printPatterns   sm w rs = printSections w $ showPatterns sm rs
 printSamples    sm w rs = printSections w $ showSamples sm rs
 printOrnaments  sm w rs = printSections w $ showOrnaments sm rs
+
+showHeader :: ModuleData -> (Position -> ShowS) -> [String]
+showHeader m sp = 
+    [ "Song type: " ++ show (mtype m)
+    , "Song name: " ++ show (title m)
+    , "Delay: " ++ show (delay m)
+    , "Loop to: " ++ show (loopingPos m) 
+    , concat $ [shows (f m) s | (f,s) <- [ (length.positions," positions, ")
+                                         , (length.patterns, " patterns, ")
+                                         , (length.samples, " samples, ")
+                                         , (length.ornaments, " ornaments.") 
+                                         ] 
+               ]
+    , "", "Positions: " ++ foldr sp "" (positions m) ]
+    
+--showsPosition :: Position -> ShowS
+--showsPosition p = ('{':) . shows (positionNumber p) . ('}':)
 
 ------------------------------
 

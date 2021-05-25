@@ -21,11 +21,12 @@ stcModule :: Module
 stcModule = newModule
     { moduleExts = [".stc"]
     , getData = getSTCModule
-    , showHeader = showSTCModHeader
     , showRow = showSTCRow
     , patternSep = "---+----------+----------+---------"
     , showSample = showSTCSample
     , showOrnament = showSTCOrnament
+    , showsPosition = \p -> ('{':) . shows (positionNumber p) . if positionTranspose p /=0 then showsSgnInt 2 (positionTranspose p) else id . ('}':)
+
     }
 
 getSTCModule :: Get ModuleData
@@ -42,15 +43,16 @@ getSTCModule = do
 
     patterns'   <- skipTo (patternsTable tables) >> getPatterns
 
-    return newModuleData {
-        delay = delay',
-        positions = positions',
-        ornaments = ornaments',
-        patterns = patterns',
-        title = identifier',
-        size = size',
-        samples = samples'
-    }
+    return newModuleData 
+        { mtype = "Sound Tracker compiled song"
+        , delay = delay'
+        , positions = positions'
+        , ornaments = ornaments'
+        , patterns = patterns'
+        , title = identifier'
+        , size = size'
+        , samples = samples'
+        }
 
 getHeader :: Get (Int, Tables, String, Int)
 getHeader = do
@@ -64,18 +66,11 @@ getHeader = do
                 pos <- getWord16le
                 orn <- getWord16le
                 pat <- getWord16le
-                return $ newTables{ positionsTable = fromIntegral pos, ornamentsTable = fromIntegral orn, patternsTable = fromIntegral pat }
-
-
-showSTCModHeader :: ModuleData -> [String]
-showSTCModHeader m = [ "Song type: Sound Tracker compiled song"
-                     , "Song name: " ++ show (title m)
-                     , "Delay: " ++ show (delay m) ]
-                   ++ [shows (f m) s | (f,s) <- [(length.positions," positions, ")
-                                                , (length.patterns, " patterns, ")
-                                                , (length.samples, " samples, ")
-                                                , (length.ornaments, " ornaments.")] ]
-                   ++ ["", "Positions: " ++ foldr showsPosition "" (positions m)]
+                return $ newTables
+                    { positionsTable = fromIntegral pos
+                    , ornamentsTable = fromIntegral orn
+                    , patternsTable = fromIntegral pat 
+                    }
 
 -----------------------------------------------------------------------------
 
@@ -153,8 +148,8 @@ showSampleData ss = [concat [showVolume s i |   s <- ss ] | i <- [1..15]]
                          showMask c m = if m then c else '.'
                          showVolume s i = if sampleDataVolume s >= 16 - i then "(*)" else "..."
 
+                         
 -----------------------------------------------------------------------------
-showsPosition p = ('{':) . shows (positionNumber p) . if positionTranspose p /=0 then showsSgnInt 2 (positionTranspose p) else id . ('}':)
 
 getPositions :: Get [Position]
 getPositions = do
@@ -186,9 +181,6 @@ getPattern n = do
 
 showSTCRow :: Row -> String
 showSTCRow r = foldr id "" $ intersperse (" | " ++) $ shows2 (rowNumber r) : ( map showsNote $ rowNotes r )
-
---showSTCPattern :: Pattern -> [String]
---showSTCPattern p = padSRight (length patternSep) (show p) : patternSep : map showRow (patternRows p) ++ [patternSep,""]
 
 -----------------------------------------------------------------------------
 

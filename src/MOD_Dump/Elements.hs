@@ -20,7 +20,7 @@ module MOD_Dump.Elements
     , Row, rowNumber, rowShared, rowNotes, makeRows, makeRowsWithShared
     , Pattern, patternNumber, patternRows, newPattern
     , Tables, positionsTable, patternsTable, samplesTable, ornamentsTable, newTables
-    , ModuleData, delay, loopingPos, positions, patterns, samples, ornaments, title, author, size, newModuleData
+    , ModuleData, delay, loopingPos, positions, patterns, samples, ornaments, title, author, size, mtype, newModuleData
     ) where
 
 import Data.List(transpose, intercalate)
@@ -35,7 +35,8 @@ data ModuleData = AModuleData
     , ornaments :: [Ornament]
     , title :: String
     , author :: String
-    , size :: Int } deriving (Eq)
+    , size :: Int 
+    , mtype:: String } deriving (Eq)
 
 instance Show ModuleData where
     showsPrec _ m = showString "({" . ("delay = " ++) . shows (delay m)
@@ -44,13 +45,14 @@ instance Show ModuleData where
         . ("), patterns = (" ++) . shows (length $ patterns m)
         . ("), samples = (" ++) . shows (length $ samples m)
         . ("), ornaments = (" ++) . shows (length $ ornaments m)
-        . ("), title = " ++) . shows (title m)
+        . ("), type = " ++) . shows (mtype m) 
+        . (", title = " ++) . shows (title m)
         . (", author = " ++) . shows (author m)
         . (", size = " ++) . shows (size m) . showString "},"
         . shows (positions m) . showString ")"
 
 newModuleData :: ModuleData
-newModuleData = AModuleData 0 0 [] [] [] [] "" "" 0
+newModuleData = AModuleData 0 0 [] [] [] [] "" "" 0 ""
 
 data Tables = ATables
     { positionsTable :: Int

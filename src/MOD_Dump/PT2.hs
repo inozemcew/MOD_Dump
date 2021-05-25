@@ -17,7 +17,6 @@ pt2Module :: Module
 pt2Module = newModule
     { moduleExts = [".pt2"]
     , getData = getPT2ModuleData
-    , showHeader = showPT2Header
     , showRow = showPT2Row
     , patternSep = "--+----+--------+--------+--------+ "
     , showSample = showPT2Sample
@@ -49,27 +48,14 @@ getPT2ModuleData = do
     guard (t == 0)
 
     return newModuleData
-        { delay = delay'
+        { mtype = "Pro Tracker 2 compiled song"
+        , delay = delay'
         , loopingPos = loopingPos'
         , positions = [ newPosition { positionNumber = i } | i <- poss]
         , patterns = patterns'
         , samples = filter (\s -> not.null $ sampleData s) samples'
         , ornaments = filter (\s -> not.null $ ornamentData s) ornaments'
         , title = title' }
-
-showPT2Header :: ModuleData -> [String]
-showPT2Header m = [ "Song type: Pro Tracker 2 compiled song"
-                  , "Song name: " ++ show (title m)
-                  , "Delay: " ++ show (delay m)
-                  , "Loop to: " ++ show (loopingPos m) ]
-                ++ [ shows (f m) s | (f,s) <- [(length.positions," positions, ")
-                                              , (length.patterns, " patterns, ")
-                                              , (length.samples, " samples, ")
-                                              , (length.ornaments, " ornaments.") ] ]
-                ++ [ "", "Positions: " ++ foldr showsPosition "" (positions m) ]
-
-showsPosition :: Position -> ShowS
-showsPosition p = ('{':) . shows (positionNumber p) . ('}':)
 
 -------------------------------
 

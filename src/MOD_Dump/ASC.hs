@@ -89,7 +89,6 @@ ascModule :: Module
 ascModule = newModule
     { moduleExts = [".asc",".C"]
     , getData = getASCModuleData
-    , showHeader = showASCHeader
     , showRow = showASCRow
     , patternSep = "---+--------+------------+------------+----------- "
     , showSample = showASCSample
@@ -122,16 +121,16 @@ getASCModuleData = do
 
             ornaments' <- getImages (ornamentsTable tables)
 
-            return newModuleData {
-                delay =  d,
-                loopingPos = l,
-                positions = ps,
-                patterns = patterns',
-                samples = samples',
-                ornaments = ornaments',
-                title = t,
-                author = a
-            }
+            return newModuleData 
+                    { mtype = "ASC Sound master compiled song"
+                    , delay =  d
+                    , loopingPos = l
+                    , positions = ps
+                    , patterns = patterns'
+                    , samples = samples'
+                    , ornaments = ornaments'
+                    , title = t
+                    , author = a }
 
 getHeader :: Maybe (String, String) -> Get (Int, Int, Tables, [Position], String, String)
 getHeader ta =  do
@@ -193,8 +192,8 @@ getMaybeTandAFromPlayer = runMaybeT $ do
 
 
 showASCHeader :: ModuleData -> [String]
-showASCHeader m = ["Song type: ASC Sound master compiled song"
-                  ,"Song title: " ++ show (title m)
+showASCHeader m = [ "Song type: " ++ show (mtype m)
+                  , "Song title: " ++ show (title m)
                   , "Composed: " ++ show (author m)
                   , "Delay: " ++ show (delay m)
                   , "Looping position: " ++ show (loopingPos m)

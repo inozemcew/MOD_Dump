@@ -75,3 +75,9 @@ readValue = readValueDef (-1)
 
 readValueDef :: Int -> String -> Int
 readValueDef d s = let v = reads s in if null v then d else fst $ head v
+
+whileM :: Monad m => (a -> Bool) -> m a -> m[a]
+whileM c m = do
+    x <- m
+    if (c x) then fmap (x:) $ whileM c m
+             else return []
