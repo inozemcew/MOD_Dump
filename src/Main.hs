@@ -3,6 +3,7 @@ import MOD_Dump.Module
 import MOD_Dump.STC
 import MOD_Dump.ASC
 import MOD_Dump.PT2
+import MOD_Dump.PT3
 import MOD_Dump.Utils
 import qualified Data.ByteString.Lazy as B
 import System.Console.GetOpt
@@ -44,7 +45,7 @@ optDefs = [ Option "h?" ["help","info"] (NoArg (modify $ \x -> x{optHelp = True}
         readWidth s          = modify $ \x -> x { optWidth = readValue s}
 
 moduleReaders :: [String -> B.ByteString -> Maybe ShowModule]
-moduleReaders = [readSTCModule, readASCModule, readPT2Module]
+moduleReaders = [readSTCModule, readASCModule, readPT2Module, readPT3Module]
 
 main :: IO ()
 main = do

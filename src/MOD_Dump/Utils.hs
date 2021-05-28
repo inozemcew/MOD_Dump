@@ -46,6 +46,15 @@ padSLeft = padLeft ' '
 padSRight :: Int -> String -> String
 padSRight = padRight ' '
 
+trimL :: String -> String
+trimL = dropWhile (==' ')
+
+trimR :: String -> String
+trimR s = foldr (\x a -> if x==' ' && null a then "" else x:a) "" s
+
+trim :: String -> String
+trim = trimR.trimL
+
 ---------------
 type Range = (Int, Int)
 
