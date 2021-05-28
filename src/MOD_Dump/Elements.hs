@@ -202,7 +202,12 @@ data NoteCmd = NoteCmdNone
              | NoteCmdGlis Int
              | NoteCmdPorta Int
              | NoteCmdPortaR Int
-             | NoteCmdNoise Int deriving (Eq)
+             | NoteCmdNoise Int 
+             | NoteCmdSampleOffset Int
+             | NoteCmdOrnamentOffset Int
+             | NoteCmdVibrato Int Int
+             | NoteCmdEnvSlide Int Int
+               deriving (Eq)
 
 instance Show NoteCmd where
     showsPrec _ x = case x of
@@ -216,6 +221,10 @@ instance Show NoteCmd where
                   NoteCmdPorta p -> showString "P=" .shows2 p
                   NoteCmdPortaR p -> showString "R=" .shows2 p
                   NoteCmdNoise n -> showString "N=" .shows2 n
+                  NoteCmdSampleOffset o -> showString "S=" .shows2 o
+                  NoteCmdOrnamentOffset o -> showString "O=" .shows2 o
+                  NoteCmdVibrato on off -> showString "V=" .shows on .(':':) .shows off
+                  NoteCmdEnvSlide d e -> showString "E=" .shows d .(':':) .shows2 e
                   _ -> showString "----"
 
 data Shared = AShared
