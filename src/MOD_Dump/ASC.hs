@@ -1,4 +1,4 @@
-module MOD_Dump.ASC (readASCModule)  where
+module MOD_Dump.ASC (ascModule)  where
 
 -- ASC module format:
     -- +0 = Delay :: Byte
@@ -82,9 +82,6 @@ import Control.Monad.Trans.State
 import GHC.Word
 import Data.List(intercalate, transpose)
 
-readASCModule :: String -> B.ByteString -> Maybe ShowModule
-readASCModule = readModule ascModule
-
 ascModule :: Module
 ascModule = newModule
     { moduleExts = [".asc",".C"]
@@ -121,7 +118,7 @@ getASCModuleData = do
 
             ornaments' <- getImages (ornamentsTable tables)
 
-            return newModuleData 
+            return newModuleData
                     { mtype = "ASC Sound master compiled song"
                     , delay =  d
                     , loopingPos = l

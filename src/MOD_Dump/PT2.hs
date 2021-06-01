@@ -1,4 +1,4 @@
-module MOD_Dump.PT2 (readPT2Module) where
+module MOD_Dump.PT2 (pt2Module) where
 
 import MOD_Dump.Elements
 import MOD_Dump.Module
@@ -9,9 +9,6 @@ import Data.Bits
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
-
-readPT2Module :: FilePath -> B.ByteString -> Maybe ShowModule
-readPT2Module = readModule pt2Module
 
 pt2Module :: Module
 pt2Module = newModule

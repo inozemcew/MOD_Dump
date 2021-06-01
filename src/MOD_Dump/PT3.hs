@@ -1,4 +1,4 @@
-module MOD_Dump.PT3 (readPT3Module) where
+module MOD_Dump.PT3 (pt3Module) where
 
 import MOD_Dump.Elements
 import MOD_Dump.Module
@@ -10,11 +10,8 @@ import Control.Monad.Trans
 import Control.Monad.Trans.State
 
 
-readPT3Module :: FilePath -> B.ByteString -> Maybe ShowModule
-readPT3Module = readModule pt3Module
-
 pt3Module :: Module
-pt3Module = newModule 
+pt3Module = newModule
     { moduleExts = [".pt3"]
     , getData = getPT3ModuleData
     , showRow = showPT3Row
@@ -41,19 +38,19 @@ getPT3ModuleData = do
     pos <- bytesRead
     guard (pos == patternsOffset')
     patterns' <- getPatterns $ maximum positions''
-    return newModuleData 
+    return newModuleData
         { mtype = mtype'
         , title = trim title'
         , author = trim author'
         , delay = delay'
         , loopingPos = loopingPos'
-        , positions = [ newPosition { positionNumber = i} | i <- positions'' ] 
+        , positions = [ newPosition { positionNumber = i} | i <- positions'' ]
         , patterns = patterns' }
-        
+
 splitTypeTitle:: String -> (String, String)
-splitTypeTitle s = (take lastDigitPos s, drop 30 s) 
+splitTypeTitle s = (take lastDigitPos s, drop 30 s)
     where
-        lastDigitPos = fst $ foldl (\(a,b) x -> if x `elem` ['0'..'9'] then (b+1,b+1) 
+        lastDigitPos = fst $ foldl (\(a,b) x -> if x `elem` ['0'..'9'] then (b+1,b+1)
                                                                        else (a,b+1)
                                    ) (0,0) $ take 30 s
 
@@ -71,7 +68,7 @@ getPatterns n = forM [0..n] $ \i -> do
     return newPattern
         { patternNumber = i
         , patternRows = makeRowsWithShared makeShared channels }
-        
+
 makeShared :: [Note] -> Shared
 makeShared notes = newShared { sharedEnvFreq = foldl (\a x -> if noteEnvFreq x == noEnvFreq then a else noteEnvFreq x) noEnvFreq notes }
 
@@ -112,12 +109,12 @@ getNotes note = do
                 | x >= 0x10 = do
                                 e <- lift getWord16be
                                 s <- lift getWord8
-                                getNotes note 
+                                getNotes note
                                     { noteEnvForm = toEnum (x - 0x10)
                                     , noteEnvFreq = fromIntegral e
-                                    , noteSample = Just $ fromIntegral (s `div` 2) 
+                                    , noteSample = Just $ fromIntegral (s `div` 2)
                                     }
-                | x <= 0x09 = do 
+                | x <= 0x09 = do
                                 modify $ \(s,fx) -> (s,x:fx)
                                 getNotes note
                 | otherwise = getNotes note
@@ -129,7 +126,7 @@ getNotes note = do
                 put (r,[])
                 ns <- getNewNotes
                 return $ n : replicate r newNote ++ ns
-                
+
             getFxParams fx = do
                 case fx of
                     1 -> do
@@ -141,10 +138,10 @@ getNotes note = do
                             lift getWord16le  -- Target tone, not used
                             v <- lift getWord16le
                             modify $ \n -> n { noteCmd = NoteCmdPorta (x * 0x100 + fromIntegral v) }
-                    3 -> do 
+                    3 -> do
                             x <- fromIntegral <$> lift getWord8
                             modify $ \n -> n { noteCmd = NoteCmdSampleOffset x }
-                    4 -> do 
+                    4 -> do
                             x <- fromIntegral <$> lift getWord8
                             modify $ \n -> n { noteCmd = NoteCmdOrnamentOffset x }
                     5 -> do
@@ -155,7 +152,7 @@ getNotes note = do
                             x <- fromIntegral <$> lift getWord8
                             e <- lift getWord16le
                             modify $ \n -> n { noteCmd = NoteCmdEnvSlide x (fromIntegral e) }
-                    9 -> do 
+                    9 -> do
                             x <- fromIntegral <$> lift getWord8
                             modify $ \n -> n { noteCmd = NoteCmdDelay x }
                     _ -> return ()
@@ -170,10 +167,10 @@ showsShared s = showsHex 4 (sharedEnvFreq s)
 showsNote :: Note -> ShowS
 showsNote n = showsPitch (notePitch n) .(' ':)
             . showsHex 1 (maybe 0 id $ noteSample n)
-            . showsEForm 
+            . showsEForm
             . showsHex 1 (maybe 0 id $ noteOrnament n)
             . showsHex 1 (maybe 0 id $ noteVolume n)
-            .(' ':) . showsCmd (noteCmd n) 
+            .(' ':) . showsCmd (noteCmd n)
     where
         showsPitch (Pitch k o ) = showString (["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"] !! fromEnum k) . shows o
         showsPitch Pause = showString "R--"
@@ -186,7 +183,7 @@ showsNote n = showsPitch (notePitch n) .(' ':)
         showsCmd (NoteCmdOrnamentOffset x) = showString "50" . showsHex 2 x
         showsCmd (NoteCmdVibrato x y) = showString "60" . showsHex 1 x . showsHex 1 y
         showsCmd (NoteCmdEnvSlide d x) = ((if x>0 then '9' else 'A'):) . showsHex 1 d . showsHex 3 x
-        showsCmd (NoteCmdDelay x) = showString "B0" . showsHex 2 x 
+        showsCmd (NoteCmdDelay x) = showString "B0" . showsHex 2 x
         showsCmd _ = showString "0000"
 
         showsEForm = if noteEnvForm n /= EnvFormNone
@@ -195,7 +192,7 @@ showsNote n = showsPitch (notePitch n) .(' ':)
 
 
 showPT3Sample::Sample -> [String]
-showPT3Sample _ = [] 
+showPT3Sample _ = []
 
 showPT3Ornament::Ornament -> [String]
-showPT3Ornament _ = [] 
+showPT3Ornament _ = []

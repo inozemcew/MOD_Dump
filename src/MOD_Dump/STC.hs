@@ -1,4 +1,4 @@
-module MOD_Dump.STC (readSTCModule) where
+module MOD_Dump.STC (stcModule) where
 
 import MOD_Dump.Elements
 import MOD_Dump.Module
@@ -12,10 +12,6 @@ import Control.Monad.Trans
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
 
-
-
-readSTCModule :: FilePath -> B.ByteString -> Maybe ShowModule
-readSTCModule = readModule stcModule
 
 stcModule :: Module
 stcModule = newModule
@@ -43,7 +39,7 @@ getSTCModule = do
 
     patterns'   <- skipTo (patternsTable tables) >> getPatterns
 
-    return newModuleData 
+    return newModuleData
         { mtype = "Sound Tracker compiled song"
         , delay = delay'
         , positions = positions'
@@ -69,7 +65,7 @@ getHeader = do
                 return $ newTables
                     { positionsTable = fromIntegral pos
                     , ornamentsTable = fromIntegral orn
-                    , patternsTable = fromIntegral pat 
+                    , patternsTable = fromIntegral pat
                     }
 
 -----------------------------------------------------------------------------
@@ -148,7 +144,7 @@ showSampleData ss = [concat [showVolume s i |   s <- ss ] | i <- [1..15]]
                          showMask c m = if m then c else '.'
                          showVolume s i = if sampleDataVolume s >= 16 - i then "(*)" else "..."
 
-                         
+
 -----------------------------------------------------------------------------
 
 getPositions :: Get [Position]

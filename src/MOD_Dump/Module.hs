@@ -1,7 +1,7 @@
 module MOD_Dump.Module
     ( readModule, printInfo, printPatterns, printSamples, printOrnaments
     , Module, newModule, moduleExts, getData, showHeader, showRow, patternSep, showSample, showOrnament, showsPosition
-    , ShowModule, newShowModule, showInfo, showSamples, showOrnaments, showPatterns
+    , ModuleData
     ) where
 
 import Data.List
@@ -10,23 +10,7 @@ import MOD_Dump.Elements
 import Data.Binary.Get
 import qualified Data.ByteString.Lazy.Char8 as B
 import Control.Monad
-
-data ShowModule = AShowModule
-    { showInfo :: [String]
-    , showSamples :: [Range] -> [[String]]
-    , showOrnaments :: [Range] -> [[String]]
-    , showPatterns :: [Range] -> [[String]]
-    }
-
-newShowModule :: Module -> ModuleData -> ShowModule
-newShowModule m md = AShowModule 
-    { showInfo =  showHeader md (showsPosition m)
-    , showPatterns  = \rs -> [ showPattern m p | p <- patterns md, isInRanges rs $ patternNumber p ]
-    , showSamples   = \rs -> [ showSample m s | s <- samples md, isInRanges rs $ sampleNumber s ]
-    , showOrnaments = \rs -> [ showOrnament m o | o <- ornaments md, isInRanges rs $ ornamentNumber o ] }
-        where
-            showPattern m p =  padSRight (length sep) (show p) : sep : map (showRow m) (patternRows p) ++ [sep,""]
-            sep = patternSep m
+import System.FilePath (takeExtension)
 
 data Module = AModule
     { moduleExts :: [String]
@@ -34,7 +18,7 @@ data Module = AModule
     , showRow :: Row -> String
     , patternSep :: String
     , showSample :: Sample -> [String]
-    , showOrnament :: Ornament -> [String] 
+    , showOrnament :: Ornament -> [String]
     , showsPosition :: Position -> ShowS
     }
 
@@ -42,44 +26,56 @@ newModule :: Module
 newModule = AModule
     { moduleExts = []
     , getData = return newModuleData
-    , showRow = show 
+    , showRow = show
     , patternSep = replicate 80 '-'
     , showSample = lines.show
-    , showOrnament = lines.show 
+    , showOrnament = lines.show
     , showsPosition = \p -> ('{':) . shows (positionNumber p) . ('}':)}
 ---------------
 
-readModule :: Module -> String -> B.ByteString -> Maybe ShowModule
-readModule m ext bs = do
-    let exts = moduleExts m
-    guard (ext `elem` exts)
+readModule :: [Module] -> String -> IO (Maybe (Module,ModuleData))
+readModule modules fname = do
+    bs <- B.readFile fname
+    return $ msum [ doRead m (takeExtension fname) bs | m <- modules ]
+        where
+            doRead m ext bs = do
+                let exts = moduleExts m
+                guard (ext `elem` exts)
+                md <- readModuleData m bs
+                return (m,md)
+
+readModuleData :: Module -> B.ByteString -> Maybe ModuleData
+readModuleData m bs = do
     let mGetter = getData m
-    md <- either (const Nothing) (\(_,_,x) -> Just x) $ runGetOrFail mGetter bs
-    return $ newShowModule m md
+    either (const Nothing) (\(_,_,x) -> Just x) $ runGetOrFail mGetter bs
+
 
 ---------------
-printInfo :: ShowModule -> IO ()
-printInfo sm = putStrLn $ unlines $ showInfo sm
+printInfo :: Module -> ModuleData -> IO ()
+printInfo m md = putStrLn $ unlines $ showHeader md (showsPosition m)
 
-printPatterns, printSamples, printOrnaments :: ShowModule -> Int -> [Range] -> IO ()
-printPatterns   sm w rs = printSections w $ showPatterns sm rs
-printSamples    sm w rs = printSections w $ showSamples sm rs
-printOrnaments  sm w rs = printSections w $ showOrnaments sm rs
+printPatterns, printSamples, printOrnaments :: Module -> ModuleData -> Int -> [Range] -> IO ()
+printPatterns   m md w rs = printSections w $ [ showPattern m p | p <- patterns md, isInRanges rs $ patternNumber p ]
+    where
+        showPattern m p =  padSRight (length sep) (show p) : sep : map (showRow m) (patternRows p) ++ [sep,""]
+        sep = patternSep m
+printSamples    m md w rs = printSections w $ [ showSample m s | s <- samples md, isInRanges rs $ sampleNumber s ]
+printOrnaments  m md w rs = printSections w $ [ showOrnament m o | o <- ornaments md, isInRanges rs $ ornamentNumber o ]
 
 showHeader :: ModuleData -> (Position -> ShowS) -> [String]
-showHeader m sp = 
+showHeader m sp =
     [ "Song type: " ++ show (mtype m)
     , "Song name: " ++ show (title m)
     , "Delay: " ++ show (delay m)
-    , "Loop to: " ++ show (loopingPos m) 
+    , "Loop to: " ++ show (loopingPos m)
     , concat $ [shows (f m) s | (f,s) <- [ (length.positions," positions, ")
                                          , (length.patterns, " patterns, ")
                                          , (length.samples, " samples, ")
-                                         , (length.ornaments, " ornaments.") 
-                                         ] 
+                                         , (length.ornaments, " ornaments.")
+                                         ]
                ]
     , "", "Positions: " ++ foldr sp "" (positions m) ]
-    
+
 --showsPosition :: Position -> ShowS
 --showsPosition p = ('{':) . shows (positionNumber p) . ('}':)
 

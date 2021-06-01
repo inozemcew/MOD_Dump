@@ -9,7 +9,6 @@ import qualified Data.ByteString.Lazy as B
 import System.Console.GetOpt
 import System.Environment
 import Control.Monad.State
-import System.FilePath (takeExtension)
 
 data Options = Options { optHelp :: Bool
                        , optAll  :: Bool
@@ -44,8 +43,8 @@ optDefs = [ Option "h?" ["help","info"] (NoArg (modify $ \x -> x{optHelp = True}
         readWidth :: String -> State Options ()
         readWidth s          = modify $ \x -> x { optWidth = readValue s}
 
-moduleReaders :: [String -> B.ByteString -> Maybe ShowModule]
-moduleReaders = [readSTCModule, readASCModule, readPT2Module, readPT3Module]
+modulesList :: [Module]
+modulesList = [stcModule, ascModule, pt2Module, pt3Module]
 
 main :: IO ()
 main = do
@@ -53,26 +52,29 @@ main = do
     let (o, p, e) = getOpt RequireOrder optDefs args
     let opts = execState (sequence_ o) defaultOptions
     let needHelp = optHelp opts || (not.null) e || null p
-    if needHelp then putStrLn $ usageInfo "Program help" optDefs
-        else forM_ p $ \i -> do
-            bs <- B.readFile i
-            let m = msum [ f (takeExtension i) bs | f <- moduleReaders ]
-            doPrint opts m
+    if needHelp
+       then
+            putStrLn $ usageInfo "Program help" optDefs
+       else forM_ p $ \i -> do
+            mmd <- readModule modulesList i
+            doPrint opts mmd
 
-doPrint :: Options -> Maybe ShowModule -> IO ()
+
+doPrint :: Options -> Maybe (Module, ModuleData) -> IO ()
 doPrint _ Nothing = do
     putStrLn "Module cannot be printed."
     putStrLn $ usageInfo "Program help" optDefs
-doPrint opts (Just m) = do
-    printInfo m
+
+doPrint opts (Just (m,md)) = do
+    printInfo m md
     let a = optAll opts || (not (optPartial opts) && null (optSamples opts)  && null (optOrnament opts) && null (optPatterns opts) )
     let w = optWidth opts
     when (optAll opts || (not.null) (optSamples opts)) $
-        printSamples m w (optSamples opts)
+        printSamples m md w (optSamples opts)
     when (optAll opts || (not.null) (optOrnament opts)) $
-        printOrnaments m w (optOrnament opts)
+        printOrnaments m md w (optOrnament opts)
     when (not $ optPartial opts && null (optPatterns opts) ) $
-        printPatterns m w (optPatterns opts)
+        printPatterns m md w (optPatterns opts)
 
 select a [] _ xs = if a then xs else []
 select _ nums f xs = [ x | x <- xs, let i = f x, any (\(f,t) -> i>=f && i<=t) nums]
@@ -87,8 +89,8 @@ readRange (Just s) = map readRange' $ breakBy ',' s
         breakBy c s = let (h, t) = break (==c) s in h : breakBy c t
         readRange' s = let  (f,t) = break (=='-') s
                             ff = if f == "" then 0 else readValueDef 0 f
-                            tt | t == ""  = ff 
-                               | t == "-" = maxBound 
+                            tt | t == ""  = ff
+                               | t == "-" = maxBound
                                | otherwise = readValueDef ff $ tail t
                         in (ff, tt)
-                            
+
