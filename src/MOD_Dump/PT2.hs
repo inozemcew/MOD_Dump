@@ -57,7 +57,7 @@ getPT2ModuleData = do
 -------------------------------
 
 showPT2Row :: Row -> String
-showPT2Row r = shows2 (rowNumber r) . ('|':) . showsShared (rowShared r)
+showPT2Row r = showsHex 2 (rowNumber r) . ('|':) . showsShared (rowShared r)
                $ (foldr (\x -> ('|':) . showsNote x) "|" (rowNotes r))
 
 showsShared :: Shared -> ShowS

@@ -158,7 +158,7 @@ getNotes note = do
                     _ -> return ()
 
 showPT3Row::Row -> String
-showPT3Row r = shows2 (rowNumber r) . ('|':) . showsShared (rowShared r)
+showPT3Row r = showsHex 2 (rowNumber r) . ('|':) . showsShared (rowShared r)
                $ (foldr (\x -> ('|':) . showsNote x) "|" (rowNotes r))
 
 showsShared :: Shared -> ShowS
@@ -193,6 +193,7 @@ showsNote n = showsPitch (notePitch n) .(' ':)
 
 showPT3Sample::Sample -> [String]
 showPT3Sample _ = []
+
 
 showPT3Ornament::Ornament -> [String]
 showPT3Ornament _ = []

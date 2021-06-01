@@ -176,7 +176,7 @@ getPattern n = do
 
 
 showSTCRow :: Row -> String
-showSTCRow r = foldr id "" $ intersperse (" | " ++) $ shows2 (rowNumber r) : ( map showsNote $ rowNotes r )
+showSTCRow r = foldr id "" $ intersperse (" | " ++) $ showsHex 2 (rowNumber r) : ( map showsNote $ rowNotes r )
 
 -----------------------------------------------------------------------------
 
