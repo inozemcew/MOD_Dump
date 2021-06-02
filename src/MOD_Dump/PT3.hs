@@ -8,6 +8,7 @@ import Data.Binary.Get
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
+import Data.Bits
 
 
 pt3Module :: Module
@@ -30,7 +31,7 @@ getPT3ModuleData = do
     songEnd' <- fromIntegral <$> getWord8
     loopingPos' <- fromIntegral <$> getWord8
     patternsOffset' <- fromIntegral <$> getWord16le
-    samplesOffsets' <- replicateM 32 $ fromIntegral <$> getWord16le
+    samples' <- getSamples
     ornamentsOffsets' <- replicateM 16 $ fromIntegral <$> getWord16le
     positions' <- whileM (<255) getWord8
     guard (all (\x -> x `mod` 3 == 0) positions')
@@ -45,7 +46,9 @@ getPT3ModuleData = do
         , delay = delay'
         , loopingPos = loopingPos'
         , positions = [ newPosition { positionNumber = i} | i <- positions'' ]
-        , patterns = patterns' }
+        , patterns = patterns'
+        , samples = filter (\s -> not.null $ sampleData s) samples'
+        }
 
 splitTypeTitle:: String -> (String, String)
 splitTypeTitle s = (take lastDigitPos s, drop 30 s)
@@ -70,7 +73,11 @@ getPatterns n = forM [0..n] $ \i -> do
         , patternRows = makeRowsWithShared makeShared channels }
 
 makeShared :: [Note] -> Shared
-makeShared notes = newShared { sharedEnvFreq = foldl (\a x -> if noteEnvFreq x == noEnvFreq then a else noteEnvFreq x) noEnvFreq notes }
+makeShared notes = let newE a x = if noteEnvFreq x == noEnvFreq then a else noteEnvFreq x
+                       newN a x = if noteNoise x == noNoise then a else noteEnvFreq x
+                       (ef,nf) = foldl (\(oe,on) n -> (newE oe n, newN on n)) (noEnvFreq,noNoise) notes
+                   in
+                       newShared { sharedEnvFreq = ef, sharedNoise = nf }
 
 
 getChannel :: Int -> Get Channel
@@ -93,7 +100,7 @@ getNotes note = do
                                 getNotes $ note { noteOrnament = Just (x - 0xf0), noteSample = Just $ fromIntegral s `div` 2 }
                 | x >= 0xd1 = getNotes $ note { noteSample = Just (x - 0xd0) }
                 | x == 0xd0 = yieldNotes note
-                | x >= 0xc0 = getNotes $ note { noteVolume = Just (x - 0xc0) }
+                | x >= 0xc1 = getNotes $ note { noteVolume = Just (x - 0xc0) }
                 | x == 0xc0 = yieldNotes $ note { notePitch = Pause }
                 | x >= 0xb2 = do
                                 freq <- lift getWord16be -- reverse byte order here
@@ -105,7 +112,7 @@ getNotes note = do
                 | x == 0xb0 = getNotes $ note { noteEnvForm = EnvFormNone }
                 | x >= 0x50 = yieldNotes $ note { notePitch = toEnum $ x - 0x50 + fromEnum pitchC1 }
                 | x >= 0x40 = getNotes $ note { noteOrnament = Just (x - 0x40) }
-                | x >= 0x20 = getNotes $ note { noteCmd = NoteCmdNoise $ x - 0x20 }
+                | x >= 0x20 = getNotes $ note { noteNoise = x - 0x20 }
                 | x >= 0x10 = do
                                 e <- lift getWord16be
                                 s <- lift getWord8
@@ -136,8 +143,8 @@ getNotes note = do
                     2 -> do
                             x <- fromIntegral <$> lift getWord8
                             lift getWord16le  -- Target tone, not used
-                            v <- lift getWord16le
-                            modify $ \n -> n { noteCmd = NoteCmdPorta (x * 0x100 + fromIntegral v) }
+                            v <- lift getInt16le
+                            modify $ \n -> n { noteCmd = NoteCmdPorta (x * 0x100 + abs(fromIntegral v)) }
                     3 -> do
                             x <- fromIntegral <$> lift getWord8
                             modify $ \n -> n { noteCmd = NoteCmdSampleOffset x }
@@ -158,7 +165,7 @@ getNotes note = do
                     _ -> return ()
 
 showPT3Row::Row -> String
-showPT3Row r = showsHex 2 (rowNumber r) . ('|':) . showsShared (rowShared r)
+showPT3Row r = shows2 (rowNumber r) . ('|':) . showsShared (rowShared r)
                $ (foldr (\x -> ('|':) . showsNote x) "|" (rowNotes r))
 
 showsShared :: Shared -> ShowS
@@ -191,9 +198,84 @@ showsNote n = showsPitch (notePitch n) .(' ':)
                         else maybe ('0':) (const ('F':)) $  noteOrnament n
 
 
-showPT3Sample::Sample -> [String]
-showPT3Sample _ = []
+---------------------------------
 
+getInstruments :: (InstrumentData d) => Int -> Get [Instrument d]
+getInstruments n = forM [0..n-1] $ \i -> do
+    offset <- fromIntegral <$> getWord16le
+    if offset == 0
+       then return $ newInstrument {instrumentNumber = i}
+       else lookAhead $  do
+            skipTo offset
+            loop <- fromIntegral <$> getWord8
+            len <- fromIntegral <$> getWord8
+            d <- replicateM len getInstrumentData
+            return $ newInstrument
+                { instrumentNumber = i
+                , instrumentData = d
+                , instrumentLoopStart = loop }
+
+class InstrumentData d where
+    getInstrumentData :: Get d
+
+instance InstrumentData SampleData where
+    getInstrumentData = getSampleData
+
+getSamples :: Get [Sample]
+getSamples = getInstruments 32
+
+
+getSampleData :: Get SampleData
+getSampleData = do
+    b1 <- getWord8
+    let eSign = testBit b1 5
+    b2 <- getWord8
+    let tAcc = testBit b2 6
+    let nAcc = testBit b2 5
+    tFreq <- fromIntegral <$> getInt16le
+    return $ newSampleData
+        { sampleDataNoise     = fromIntegral $ 31 .&. shiftR b1 1
+        , sampleDataTone      = tFreq
+        , sampleDataVolume    = fromIntegral $ 15 .&. b2
+        , sampleDataNoiseMask = not $ testBit b2 7
+        , sampleDataToneMask  = not $ testBit b2 4
+        , sampleDataEnvMask   = not $ testBit b1 0
+        , sampleDataEffect = case (testBit b1 7, testBit b1 6) of
+                                    (True, False) -> SDEDown
+                                    (True, True) -> SDEUp
+                                    _ -> SDENone
+        }
+
+showPT3Sample::Sample -> [String]
+showPT3Sample s = let width53 = 38 in
+                      [ padSRight width53 $ "Sample " ++ showsHex 2 (sampleNumber s) "", replicate width53 '-' ]
+                      ++ showSampleData (sampleLoopStart s) (sampleData s)
+                      ++ [ replicate width53 '-' ]
+
+showSampleData:: Int -> [SampleData] -> [String]
+showSampleData l sds = [ shows2 i
+                      .showsLoop i
+                      .showsFlags s .(' ':)
+                      .showsSgnInt 5 (sampleDataTone s) .(' ':)
+                      .shows2 (sampleDataNoise s) .(' ':)
+                      .showsMasks s .(' ':)
+                      .showsVol (sampleDataVolume s) $ ""
+                      | (i,s) <- zip [0..] sds]
+    where
+        showsLoop i = if i >= l then ('*':) else (' ':)
+        showsFlags s = let  f1 = case sampleDataEffect s of
+                                SDEDown -> '-'
+                                SDEUp -> '+'
+                                _ -> '0'
+                            f2 = '0'
+                            f3 = '0'
+                       in \x -> f1:f2:f3:x
+        showsMasks s = \x -> showMask 'T' (sampleDataToneMask s)
+            : showMask 'N' (sampleDataNoiseMask s)
+            : showMask 'E' (sampleDataEnvMask s )
+            : x
+        showMask c m = if m then c else '-'
+        showsVol v = showString (concat $ replicate v "#") . showString (concat $ replicate (16 - v) ".") . (' ':) .showsHex 1 v
 
 showPT3Ornament::Ornament -> [String]
 showPT3Ornament _ = []

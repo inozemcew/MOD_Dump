@@ -4,7 +4,7 @@
 module MOD_Dump.Elements
     ( Instrument, instrumentNumber, instrumentData, instrumentLoopStart, instrumentLoopEnd, newInstrument
     , Sample, sampleNumber, sampleData, sampleLoopStart, sampleLoopEnd, newSample
-    , SampleData, sampleDataVolume, sampleDataToneMask, sampleDataNoiseMask, sampleDataTone, sampleDataNoise, sampleDataEffect, newSampleData
+    , SampleData, sampleDataVolume, sampleDataToneMask, sampleDataNoiseMask, sampleDataEnvMask, sampleDataTone, sampleDataNoise, sampleDataEffect, newSampleData
     , SampleDataEffect(SDENone, SDEEnv, SDEDown, SDEUp)
     , Ornament, ornamentNumber, ornamentData, newOrnament
     , OrnamentData, ornamentDataTone, ornamentDataNoise, newOrnamentData
@@ -35,7 +35,7 @@ data ModuleData = AModuleData
     , ornaments :: [Ornament]
     , title :: String
     , author :: String
-    , size :: Int 
+    , size :: Int
     , mtype:: String } deriving (Eq)
 
 instance Show ModuleData where
@@ -45,7 +45,7 @@ instance Show ModuleData where
         . ("), patterns = (" ++) . shows (length $ patterns m)
         . ("), samples = (" ++) . shows (length $ samples m)
         . ("), ornaments = (" ++) . shows (length $ ornaments m)
-        . ("), type = " ++) . shows (mtype m) 
+        . ("), type = " ++) . shows (mtype m)
         . (", title = " ++) . shows (title m)
         . (", author = " ++) . shows (author m)
         . (", size = " ++) . shows (size m) . showString "},"
@@ -202,7 +202,7 @@ data NoteCmd = NoteCmdNone
              | NoteCmdGlis Int
              | NoteCmdPorta Int
              | NoteCmdPortaR Int
-             | NoteCmdNoise Int 
+             | NoteCmdNoise Int
              | NoteCmdSampleOffset Int
              | NoteCmdOrnamentOffset Int
              | NoteCmdVibrato Int Int
@@ -323,9 +323,10 @@ data SampleData = ASampleData
     , sampleDataVolume :: Int
     , sampleDataNoiseMask :: Bool
     , sampleDataToneMask :: Bool
+    , sampleDataEnvMask :: Bool
     , sampleDataEffect :: SampleDataEffect } deriving (Eq)
 
-newSampleData = ASampleData 0 0 0 False False SDENone
+newSampleData = ASampleData 0 0 0 False False False SDENone
 
 instance Show SampleData where
     showsPrec _ d = ('(':) . shows (sampleDataEffect d) . shows2 (sampleDataVolume d)
