@@ -6,7 +6,7 @@ module MOD_Dump.Elements
     , Sample, sampleNumber, sampleData, sampleLoopStart, sampleLoopEnd, newSample
     , SampleData, sampleDataVolume, sampleDataToneMask, sampleDataNoiseMask, sampleDataEnvMask, sampleDataTone, sampleDataNoise, sampleDataEffect, newSampleData
     , SampleDataEffect(SDENone, SDEEnv, SDEDown, SDEUp)
-    , Ornament, ornamentNumber, ornamentData, newOrnament
+    , Ornament, ornamentNumber, ornamentData, ornamentLoopStart, ornamentLoopEnd, newOrnament
     , OrnamentData, ornamentDataTone, ornamentDataNoise, newOrnamentData
     , Pitch(Pitch, Pause, Release, NoNote), pitchKey, pitchOctave, isPitch, pitchC1, pitchAS0
     , EnvFreq, toEnvFreq, noEnvFreq, EnvForm(..), noEnvForm

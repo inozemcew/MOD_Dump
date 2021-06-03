@@ -32,7 +32,7 @@ getPT3ModuleData = do
     loopingPos' <- fromIntegral <$> getWord8
     patternsOffset' <- fromIntegral <$> getWord16le
     samples' <- getSamples
-    ornamentsOffsets' <- replicateM 16 $ fromIntegral <$> getWord16le
+    ornaments' <- getOrnaments
     positions' <- whileM (<255) getWord8
     guard (all (\x -> x `mod` 3 == 0) positions')
     let positions'' = [ fromIntegral x `div` 3 | x <- positions' ]
@@ -48,6 +48,7 @@ getPT3ModuleData = do
         , positions = [ newPosition { positionNumber = i} | i <- positions'' ]
         , patterns = patterns'
         , samples = filter (\s -> not.null $ sampleData s) samples'
+        , ornaments = filter (\o -> ornamentNumber o > 0 && (not.null $ ornamentData o)) ornaments'
         }
 
 splitTypeTitle:: String -> (String, String)
@@ -254,7 +255,7 @@ showPT3Sample s = let width53 = 38 in
 
 showSampleData:: Int -> [SampleData] -> [String]
 showSampleData l sds = [ shows2 i
-                      .showsLoop i
+                      .showsLoop l i
                       .showsFlags s .(' ':)
                       .showsSgnInt 5 (sampleDataTone s) .(' ':)
                       .shows2 (sampleDataNoise s) .(' ':)
@@ -262,7 +263,6 @@ showSampleData l sds = [ shows2 i
                       .showsVol (sampleDataVolume s) $ ""
                       | (i,s) <- zip [0..] sds]
     where
-        showsLoop i = if i >= l then ('*':) else (' ':)
         showsFlags s = let  f1 = case sampleDataEffect s of
                                 SDEDown -> '-'
                                 SDEUp -> '+'
@@ -277,5 +277,27 @@ showSampleData l sds = [ shows2 i
         showMask c m = if m then c else '-'
         showsVol v = showString (concat $ replicate v "#") . showString (concat $ replicate (16 - v) ".") . (' ':) .showsHex 1 v
 
-showPT3Ornament::Ornament -> [String]
-showPT3Ornament _ = []
+-------------------------------
+getOrnaments :: Get [Ornament]
+getOrnaments = getInstruments 16
+
+instance InstrumentData OrnamentData where
+    getInstrumentData = getOrnamentData
+
+getOrnamentData :: Get OrnamentData
+getOrnamentData = do
+    t <- getInt8
+    return newOrnamentData{ ornamentDataTone = fromIntegral t }
+
+showPT3Ornament :: Ornament -> [String]
+showPT3Ornament orn = let o = [ shows2 i
+                              . showsLoop (ornamentLoopStart orn) i
+                              . showsSgnInt 3 (ornamentDataTone d) $ " "
+                                  |  (i, d) <- zip [0..] (ornamentData orn)]
+                      in [padSRight (length o) $ "Ornament: " ++ (show $ ornamentNumber orn)] ++ o
+
+
+-------------------------------
+
+showsLoop :: Int -> Int -> ShowS
+showsLoop l i = if i >= l then ('*':) else (' ':)
