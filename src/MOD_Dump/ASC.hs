@@ -351,12 +351,12 @@ getInstruments s = do
     forM [0..31] $ \i -> do
         w <- getWord16le
         (d,(ls,le)) <- lookAhead $ getInstrumentData (fromIntegral w - i * 2 - 2)
-        return $ newInstrument {
-            instrumentNumber = i
-            ,instrumentData = d
-            ,instrumentLoopStart = ls
-            ,instrumentLoopEnd = le
-        }
+        return $ newInstrument
+            { instrumentNumber = i
+            , instrumentData = d
+            , instrumentLoopStart = ls
+            , instrumentLoopEnd = le
+            }
 
 showInstrument :: (InstrumentData d) => String -> String -> Instrument d -> [String]
 showInstrument title sep instr = padSRight (length sep) (title ++ shows32 (instrumentNumber instr) "")
