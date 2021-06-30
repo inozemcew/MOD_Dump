@@ -4,6 +4,7 @@ import Data.Binary.Get
 import Control.Monad
 import Control.Monad.Trans
 import Data.List(intercalate)
+import Data.Bits(Bits, setBit, clearBit)
 
 showsP :: Char -> Int -> Int -> ShowS
 showsP c n i = (padLeft c n (show i) ++)
@@ -90,3 +91,6 @@ whileM c m = do
     x <- m
     if (c x) then fmap (x:) $ whileM c m
              else return []
+
+changeBit :: (Bits a) => Int -> Bool -> a -> a
+changeBit b f n = if f then setBit n b else clearBit n b

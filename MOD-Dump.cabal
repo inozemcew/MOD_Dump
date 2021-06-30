@@ -31,5 +31,5 @@ Test-Suite test-MOD_Dump
     default-language:    Haskell2010
     hs-source-dirs:      test src
     main-is:             Tests.hs
-    other-modules:       MOD_Dump.Elements, MOD_Dump.Elements, MOD_Dump.Utils
-    build-depends:       base >=4.14 && <4.15, HUnit, mtl, binary >=0.8.0.0
+    other-modules:       MOD_Dump.Elements, MOD_Dump.Elements, MOD_Dump.Utils, MOD_Dump.Module, MOD_Dump.STC
+    build-depends:       base >=4.14 && <4.15, HUnit, mtl, binary >=0.8.0.0, bytestring, filepath, transformers

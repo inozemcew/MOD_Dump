@@ -1,6 +1,6 @@
 module MOD_Dump.Module
     ( readModule, printInfo, printPatterns, printSamples, printOrnaments
-    , Module, newModule, moduleExts, getData, showHeader, showRow, patternSep, showSample, showOrnament, showsPosition
+    , Module, newModule, moduleExts, getData, putData, showHeader, showRow, patternSep, showSample, showOrnament, showsPosition
     , ModuleData
     ) where
 
@@ -8,6 +8,7 @@ import Data.List
 import MOD_Dump.Utils
 import MOD_Dump.Elements
 import Data.Binary.Get
+import Data.Binary.Put
 import qualified Data.ByteString.Lazy.Char8 as B
 import Control.Monad
 import System.FilePath (takeExtension)
@@ -15,6 +16,7 @@ import System.FilePath (takeExtension)
 data Module = AModule
     { moduleExts :: [String]
     , getData :: Get ModuleData
+    , putData :: ModuleData -> Put
     , showRow :: Row -> String
     , patternSep :: String
     , showSample :: Sample -> [String]
@@ -26,6 +28,7 @@ newModule :: Module
 newModule = AModule
     { moduleExts = []
     , getData = return newModuleData
+    , putData = \_ -> return ()
     , showRow = show
     , patternSep = replicate 80 '-'
     , showSample = lines.show

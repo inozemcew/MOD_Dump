@@ -17,7 +17,7 @@ module MOD_Dump.Elements
     , Shared, sharedEnvForm, sharedEnvFreq, sharedMask,sharedNoise, newShared
     , Note, noteCmd, notePitch, noteSample, noteOrnament, noteVolume, noteEnvForm, noteEnvFreq, noteNoise, newNote
     , Channel
-    , Row, rowNumber, rowShared, rowNotes, makeRows, makeRowsWithShared
+    , Row, rowNumber, rowShared, rowNotes, makeRows, makeRowsWithShared, channelsFromRows
     , Pattern, patternNumber, patternRows, newPattern
     , Tables, positionsTable, patternsTable, samplesTable, ornamentsTable, newTables
     , ModuleData, delay, loopingPos, positions, patterns, samples, ornaments, title, author, size, mtype, newModuleData
@@ -280,6 +280,9 @@ makeRowsWithShared f cs = map makeRow $ zip3 [0..] ss $ tcs
 
 makeRows :: [Channel] -> [Row]
 makeRows = makeRowsWithShared (const newShared)
+
+channelsFromRows :: [Row] -> [Channel]
+channelsFromRows rs = transpose [ rowNotes r | r <- rs ]
 
 instance Show Row where
     showsPrec _ r = ('(':) . shows (rowNumber r) . (':':) .shows (rowShared r) . ('|':). showList (rowNotes r) . (')':)

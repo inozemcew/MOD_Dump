@@ -5,6 +5,7 @@ import MOD_Dump.Module
 import MOD_Dump.Utils
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
+import Data.Binary.Put
 import Data.Bits
 import Data.List(intersperse, intercalate)
 import Control.Monad
@@ -17,6 +18,7 @@ stcModule :: Module
 stcModule = newModule
     { moduleExts = [".stc"]
     , getData = getSTCModule
+    , putData = putSTCModule
     , showRow = showSTCRow
     , patternSep = "---+----------+----------+---------"
     , showSample = showSTCSample
@@ -50,6 +52,15 @@ getSTCModule = do
         , samples = samples'
         }
 
+putSTCModule :: ModuleData -> Put
+putSTCModule md = do
+    putHeader md
+    putSamples $ samples md
+    putPositions $ positions md
+    putOrnaments $ ornaments md
+    putPatterns $ patterns md
+
+
 getHeader :: Get (Int, Tables, String, Int)
 getHeader = do
     delay   <- fromIntegral `liftM` getWord8
@@ -68,6 +79,18 @@ getHeader = do
                     , patternsTable = fromIntegral pat
                     }
 
+putHeader :: ModuleData -> Put
+putHeader md = do
+    putWord8 $ fromIntegral $ delay md
+    let pos = length(samples md) * 99 + 27
+    let orn = pos + length(positions md) * 2 + 1
+    let pat = orn + length(ornaments md) * 33
+    putWord16le $ fromIntegral $ pos
+    putWord16le $ fromIntegral $ orn
+    putWord16le $ fromIntegral $ pat
+    putLazyByteString $ B.pack $ title md
+    putWord16le $ fromIntegral $ size md
+
 -----------------------------------------------------------------------------
 
 getOrnaments :: Int -> Get [Ornament]
@@ -79,6 +102,11 @@ getOrnaments ornamentsCount = replicateM ornamentsCount getOrnament
                 x <- getInt8
                 return newOrnamentData { ornamentDataTone = fromIntegral x }
             return $ newOrnament { ornamentNumber = l, ornamentData = ds }
+
+putOrnaments :: [Ornament] -> Put
+putOrnaments orns = forM_ orns $ \o -> do
+    putWord8 $ fromIntegral $ ornamentNumber o
+    mapM_ (putInt8.fromIntegral.ornamentDataTone) $ ornamentData o
 
 showSTCOrnament :: Ornament -> [String]
 showSTCOrnament orn = let o = concat [showsSgnInt 3 (ornamentDataTone d) " " |  d <- ornamentData orn]
@@ -100,6 +128,13 @@ getSamples samplesCount = replicateM samplesCount getSample
                 sampleLoopStart = p,
                 sampleLoopEnd = p + l
             }
+
+putSamples :: [Sample] -> Put
+putSamples ss = forM_ ss $ \s -> do
+    putWord8 $ fromIntegral $ sampleNumber s
+    forM_ (sampleData s ) putSampleData
+    putWord8 $ fromIntegral $ sampleLoopStart s
+    putWord8 $ fromIntegral $ sampleLoopEnd s - sampleLoopStart s
 
 showSTCSample :: Sample -> [String]
 showSTCSample s = (padSRight width32 $ "Sample: " ++ show (sampleNumber s))
@@ -125,7 +160,7 @@ getSampleData = do
     let v = fromIntegral $ b0 .&. 15
     let nm = not $ testBit b1 7
     let tm = not $ testBit b1 6
-    let ss = fromIntegral $ shiftR b0 4 .|. b2
+    let ss = fromIntegral (b0 .&. 0xf0) * 16 + fromIntegral b2
     let s = if testBit b1 5 then ss else -ss
     let n = fromIntegral $ b1 .&. 31
     return $ newSampleData {
@@ -135,6 +170,15 @@ getSampleData = do
         sampleDataTone = s,
         sampleDataNoise = n
     }
+
+putSampleData :: SampleData -> Put
+putSampleData sd = do
+    putWord8 $ fromIntegral $ sampleDataVolume sd .|. (abs(sampleDataTone sd) `shiftR` 4 .&. 0xf0)
+    putWord8 $ fromIntegral $ changeBit 7 (not $ sampleDataNoiseMask sd)
+           $ changeBit 6 (not $ sampleDataToneMask sd)
+           $ changeBit 5 (sampleDataTone sd > 0)
+           $ sampleDataNoise sd
+    putWord8 $ fromIntegral $ abs(sampleDataTone sd) .&. 0xff
 
 showSampleData :: [SampleData] -> [String]
 showSampleData ss = [concat [showVolume s i |   s <- ss ] | i <- [1..15]]
@@ -150,10 +194,18 @@ showSampleData ss = [concat [showVolume s i |   s <- ss ] | i <- [1..15]]
 getPositions :: Get [Position]
 getPositions = do
     n <- getWord8
-    replicateM (fromIntegral n) $ do
+    replicateM (fromIntegral n + 1) $ do
         pn <- getWord8
         t <- getWord8
         return $ newPosition { positionNumber = fromIntegral pn, positionTranspose =  fromIntegral t }
+
+putPositions :: [Position] -> Put
+putPositions ps = do
+    putWord8 $ fromIntegral $ length ps - 1
+    forM_ ps $ \p -> do
+        putWord8 $ fromIntegral $ positionNumber p
+        putWord8 $ fromIntegral $ positionTranspose p
+
 
 ----------------------------------------------------------------------------
 
@@ -167,6 +219,12 @@ getPatterns = do
             ps <- getPatterns
             return $ p:ps
 
+putPatterns :: [Pattern] -> Put
+putPatterns ps = do
+    mapM_ putPattern ps
+    putWord8 255
+
+
 getPattern :: Int -> Get Pattern
 getPattern n = do
             chA <-getChannel
@@ -174,6 +232,8 @@ getPattern n = do
             chC <-getChannel
             return $ newPattern {patternNumber = n, patternRows = makeRows [chA,chB,chC] }
 
+putPattern :: Pattern -> Put
+putPattern p = mapM_ putChannel $ channelsFromRows $ patternRows p
 
 showSTCRow :: Row -> String
 showSTCRow r = foldr id "" $ intersperse (" | " ++) $ showsHex 2 (rowNumber r) : ( map showsNote $ rowNotes r )
@@ -237,4 +297,32 @@ getChannel = do
             ns <- getNewNotes
             return $ x : replicate r newNote ++ ns
 
------------------------------------------------------------------------------
+putChannel :: Channel -> Put
+putChannel ch = evalStateT (putChannel' ch) (newNote, 255, 0)
+putChannel' [] = lift $ putWord8 255
+putChannel' (n:ch) = if n == newNote then modify $ \(note, step, count) -> (note, step, count+1) else do
+    putIf noteSample   (\x v -> x{noteSample = v})    $ \mx -> when (mx /= Nothing) $ let (Just x) = mx in putWord8 $ fromIntegral x + 0x60
+    putIf noteOrnament (\x v -> x{noteOrnament = v})  $ \mx -> when (mx /= Nothing) $ let (Just x) = mx in putWord8 $ fromIntegral x + 0x70
+    putIf noteEnvForm  (\x v -> x{noteEnvForm = v})   $ \x -> putWord8 $ fromIntegral $ fromEnum x + 0x80
+    (oldn, step , count) <- get
+    when (count /= step) $ lift $ putWord8 $ fromIntegral count + 0xa1
+    put (oldn,count,0)
+
+
+        where
+            putIf field modF putF = do
+                (oldn, step , count) <- get
+                let newv = field n
+                when (field oldn /= newv) $ do
+                    lift $ putF newv
+                    let newn = modF oldn newv in put (newn, step, count)
+
+
+packChannel :: Channel -> [(Note,Maybe Int)]
+packChannel cnl = doPack 0 cnl
+    where
+        doPack _ [] =[]
+        doPack c (n:ns) = let
+                              (h,t) = span (== newNote) ns
+                              l = length h
+                          in (n, if l == c then Nothing else Just l):doPack l t
