@@ -1,4 +1,4 @@
-module MOD_Dump.PT2 (pt2Module) where
+module MOD_Dump.PT2 where
 
 import MOD_Dump.Elements
 import MOD_Dump.Module

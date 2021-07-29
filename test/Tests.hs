@@ -5,6 +5,7 @@ import System.Exit
 import Control.Monad
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Put
+import Data.Binary.Get
 
 import MOD_Dump.Elements
 import MOD_Dump.Utils
@@ -37,10 +38,22 @@ testUtils = test
 
 
 --------------------
+fName = "mods/Bulba.stc"
 
-testSTC = TestCase $ do
-    f <- B.readFile "mods/AC-DC.stc"
-    Just (m, md) <- readModule [stcModule] "mods/AC-DC.stc"
+testSTC = test
+            [ testSampleData
+            , testSTCModule
+            ]
+
+testSampleData = TestCase $ when (a /= b)  $ assertFailure $ unlines $ hexDiff a b : showSampleData [s]
+    where
+        a = B.pack "\x0f\x0a0\x00"
+        s = runGet getSampleData $ a
+        b = runPut $ putSampleData s
+
+testSTCModule = TestCase $ do
+    f <- B.readFile fName
+    Just (m, md) <- readModule [stcModule] fName
     let b = runPut (putData m $ md)
     let a = (B.take (B.length b) f)
     when (a /= b)  $ assertFailure $ hexDiff a b

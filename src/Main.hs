@@ -1,9 +1,6 @@
 module Main where
+import MOD_Dump.Formats
 import MOD_Dump.Module
-import MOD_Dump.STC
-import MOD_Dump.ASC
-import MOD_Dump.PT2
-import MOD_Dump.PT3
 import MOD_Dump.Utils
 import qualified Data.ByteString.Lazy as B
 import System.Console.GetOpt

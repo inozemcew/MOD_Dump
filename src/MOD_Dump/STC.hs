@@ -1,4 +1,4 @@
-module MOD_Dump.STC (stcModule) where
+module MOD_Dump.STC  where
 
 import MOD_Dump.Elements
 import MOD_Dump.Module
@@ -7,12 +7,11 @@ import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits
-import Data.List(intersperse, intercalate)
+import Data.List(intersperse, intercalate, groupBy)
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
-
 
 stcModule :: Module
 stcModule = newModule
@@ -54,11 +53,18 @@ getSTCModule = do
 
 putSTCModule :: ModuleData -> Put
 putSTCModule md = do
-    putHeader md
+    putHeader calcTables md
     putSamples $ samples md
     putPositions $ positions md
     putOrnaments $ ornaments md
-    putPatterns $ patterns md
+    putPatterns calcTables $ patterns md
+        where
+        calcTables = (pos, orn, pat)
+        pos = length(samples md) * 99 + 27
+        orn = pos + length(positions md) * 2 + 1
+        pat = orn + length(ornaments md) * 33
+
+
 
 
 getHeader :: Get (Int, Tables, String, Int)
@@ -79,12 +85,9 @@ getHeader = do
                     , patternsTable = fromIntegral pat
                     }
 
-putHeader :: ModuleData -> Put
-putHeader md = do
+putHeader :: (Int, Int, Int) -> ModuleData -> Put
+putHeader (pos, orn, pat) md = do
     putWord8 $ fromIntegral $ delay md
-    let pos = length(samples md) * 99 + 27
-    let orn = pos + length(positions md) * 2 + 1
-    let pat = orn + length(ornaments md) * 33
     putWord16le $ fromIntegral $ pos
     putWord16le $ fromIntegral $ orn
     putWord16le $ fromIntegral $ pat
@@ -163,30 +166,35 @@ getSampleData = do
     let ss = fromIntegral (b0 .&. 0xf0) * 16 + fromIntegral b2
     let s = if testBit b1 5 then ss else -ss
     let n = fromIntegral $ b1 .&. 31
-    return $ newSampleData {
-        sampleDataVolume = v,
-        sampleDataNoiseMask = nm,
-        sampleDataToneMask = tm,
-        sampleDataTone = s,
-        sampleDataNoise = n
-    }
+    return $ newSampleData
+        { sampleDataVolume = v
+        , sampleDataNoiseMask = nm
+        , sampleDataToneMask = tm
+        , sampleDataTone = s
+        , sampleDataNoise = n
+        , sampleDataEffect = (if ss == 0 && testBit b1 5 then SDEDown else SDENone)
+        }
 
 putSampleData :: SampleData -> Put
 putSampleData sd = do
     putWord8 $ fromIntegral $ sampleDataVolume sd .|. (abs(sampleDataTone sd) `shiftR` 4 .&. 0xf0)
     putWord8 $ fromIntegral $ changeBit 7 (not $ sampleDataNoiseMask sd)
            $ changeBit 6 (not $ sampleDataToneMask sd)
-           $ changeBit 5 (sampleDataTone sd > 0)
+           $ changeBit 5 (sampleDataTone sd > 0 || (sampleDataTone sd == 0 && sampleDataEffect sd == SDEDown))
            $ sampleDataNoise sd
     putWord8 $ fromIntegral $ abs(sampleDataTone sd) .&. 0xff
 
 showSampleData :: [SampleData] -> [String]
 showSampleData ss = [concat [showVolume s i |   s <- ss ] | i <- [1..15]]
-                 ++ [concatMap (\s -> [' ', showMask 'T' (sampleDataToneMask s), showMask 'N' (sampleDataNoiseMask s)]) ss]
-                 ++ [foldr (\x -> showChar ' ' . showsHex 2 x) "" $ map sampleDataNoise ss]
+                 ++ [concatMap (\s -> [' ', showMask 'T' (sampleDataToneMask s), showMask 'N' (sampleDataNoiseMask s)]) ss
+                    , foldr (\x -> showChar ' ' . showsHex 2 x) "" $ map sampleDataNoise ss
+                    , showTone $ take 16 ss
+                    , showTone $ drop 16 ss
+                    ]
                     where
                          showMask c m = if m then c else '.'
                          showVolume s i = if sampleDataVolume s >= 16 - i then "(*)" else "..."
+                         showTone ss = foldr (\x -> showChar ' ' . showsSgnInt 5 x) "" $ map sampleDataTone ss
 
 
 -----------------------------------------------------------------------------
@@ -219,10 +227,32 @@ getPatterns = do
             ps <- getPatterns
             return $ p:ps
 
-putPatterns :: [Pattern] -> Put
-putPatterns ps = do
-    mapM_ putPattern ps
+putPatterns :: (Int,Int,Int) -> [Pattern] -> Put
+putPatterns (_,_,ofs) ps = do
+    runStateT (putOffsets offs) (-1)
     putWord8 255
+    puts
+        where
+            pch = [(patternNumber p,ch) | p <- ps, ch <- channelsFromRows $ patternRows p ]
+            pchn = map fst pch
+            (puts,ds) = putChannels $ map snd pch
+
+            offs::[(Int,Int)]
+            offs = evalState (calcOffsets [ (p,l) | (l,p) <- zip ds $ map fst pch]) $ ofs + length ps * 7 + 1
+
+            calcOffsets:: [(Int,Either Int Int)] -> State Int [(Int, Int)]
+            calcOffsets = mapM $ \(n,l) -> do
+                s <- get
+                case l of
+                     Left x  -> return (n,snd $ offs !! (x-1))
+                     Right x -> do
+                         put (s+x)
+                         return (n,s)
+            putOffsets nls = forM_ nls $ \(n,l) -> do
+                o <- get
+                when ( o /= n) $ lift $ putWord8 $ fromIntegral n
+                lift $ putWord16le $ fromIntegral l
+                put n
 
 
 getPattern :: Int -> Get Pattern
@@ -232,8 +262,13 @@ getPattern n = do
             chC <-getChannel
             return $ newPattern {patternNumber = n, patternRows = makeRows [chA,chB,chC] }
 
-putPattern :: Pattern -> Put
-putPattern p = mapM_ putChannel $ channelsFromRows $ patternRows p
+putChannels :: [Channel] -> (Put, [Either Int Int])
+putChannels chs = foldr (\x (ap,al) -> either (\l -> (ap, Left l : al)) (\(p,l) -> (p>>ap, Right l : al)) x) (return (), []) ds
+    where
+        nchs = zip [1..] chs
+        ds = map doPutChannel nchs
+        doPutChannel (n,ch) = let f = findSame (n,ch) in if f == n then Right $ putChannel ch else Left f
+        findSame (n,ch) = fst $ head $ dropWhile (\(i,c) -> c /= ch && i<n) nchs
 
 showSTCRow :: Row -> String
 showSTCRow r = foldr id "" $ intersperse (" | " ++) $ showsHex 2 (rowNumber r) : ( map showsNote $ rowNotes r )
@@ -250,14 +285,15 @@ noteNames = ["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"]
 -----------------------------------------------------------------------------
 
 showsNote :: Note -> ShowS
-showsNote n = if (isPitch p) then showsPitch p . (' ':) . showsHex 1 (maybe 0 id $ noteSample n) . showsOrnEnv
+showsNote n = if (isPitch p) then showsPitch p . (' ':) . showsHex 1 s . showsOrnEnv
     else
         showsPitch p . showString " ----"
     where
+        s = maybe 0 id $ noteSample n
         p = notePitch n
         o = noteOrnament n
-        showsOrnEnv = if (noteEnvForm n == EnvFormNone)
-                         then ((if o == Nothing then "00" else "F0") ++ ) . showsHex 1 (maybe 0 id o)
+        showsOrnEnv = if (noteEnvForm n == noEnvForm)
+                         then maybe ("000"++) (\x -> ("F0"++ ) . (showsHex 1 x)) o
                          else showsHex 1 (fromEnum $ noteEnvForm n) . showsHex 2 (noteEnvFreq n)
 
 
@@ -279,7 +315,7 @@ getChannel = do
                     | x <= 0x5f = yieldNote $ n{notePitch = toEnum $ x + fromEnum pitchC1}
                     | x == 0x80 = yieldNote $ n{notePitch = Pause}
                     | x == 0x81 = yieldNote $ n{notePitch = NoNote}
-                    | x == 0x82 = getNotes $ n{noteOrnament = Just 0, noteEnvForm = EnvFormNone }
+                    | x == 0x82 = getNotes $ n{noteOrnament = Just 0, noteEnvForm = noEnvForm }
                     | x >= 0x60 && x <= 0x6f = getNotes $ n{ noteSample = Just (x - 0x60) }
                     | x >= 0x70 && x <= 0x7f = getNotes $ n{ noteOrnament = Just (x - 0x70) }
                     | x >= 0x83 && x <= 0x8e = do
@@ -297,32 +333,42 @@ getChannel = do
             ns <- getNewNotes
             return $ x : replicate r newNote ++ ns
 
-putChannel :: Channel -> Put
-putChannel ch = evalStateT (putChannel' ch) (newNote, 255, 0)
-putChannel' [] = lift $ putWord8 255
-putChannel' (n:ch) = if n == newNote then modify $ \(note, step, count) -> (note, step, count+1) else do
-    putIf noteSample   (\x v -> x{noteSample = v})    $ \mx -> when (mx /= Nothing) $ let (Just x) = mx in putWord8 $ fromIntegral x + 0x60
-    putIf noteOrnament (\x v -> x{noteOrnament = v})  $ \mx -> when (mx /= Nothing) $ let (Just x) = mx in putWord8 $ fromIntegral x + 0x70
-    putIf noteEnvForm  (\x v -> x{noteEnvForm = v})   $ \x -> putWord8 $ fromIntegral $ fromEnum x + 0x80
-    (oldn, step , count) <- get
-    when (count /= step) $ lift $ putWord8 $ fromIntegral count + 0xa1
-    put (oldn,count,0)
-
-
-        where
-            putIf field modF putF = do
-                (oldn, step , count) <- get
-                let newv = field n
-                when (field oldn /= newv) $ do
-                    lift $ putF newv
-                    let newn = modF oldn newv in put (newn, step, count)
-
-
-packChannel :: Channel -> [(Note,Maybe Int)]
-packChannel cnl = doPack 0 cnl
+putChannel :: Channel -> (Put, Int) -- returns Put chain and length in bytes
+putChannel ch = execState (putNotes (packChannel ch) newNote) (mempty, 0)
     where
-        doPack _ [] =[]
-        doPack c (n:ns) = let
-                              (h,t) = span (== newNote) ns
-                              l = length h
-                          in (n, if l == c then Nothing else Just l):doPack l t
+        putNotes :: [(Note,Maybe Int)] -> Note -> State (Put, Int) ()
+        putNotes []          oldn = doModify (putWord8 255) 1
+        putNotes ((n,mc):ns) oldn = do
+            putNote n oldn mc
+            putNotes ns n
+
+        putNote :: Note -> Note -> Maybe Int -> State (Put, Int) ()
+        putNote n oldn mc = do
+            maybe (return ()) (\c -> doModify (putCount c) 1) mc
+            when (noteSample n /= Nothing && noteSample n /= noteSample oldn)
+                $ doModify (putSample n) 1
+            when (noteOrnament n /= Nothing && noteOrnament n /= noteOrnament oldn)
+                $ doModify (putOrnament n) 1
+            when (noteEnvForm n /= noEnvForm)
+                $ doModify (putEnv n) 2
+            doModify (putPitch $ notePitch n) 1
+
+        putPitch Pause = putWord8 128
+        putPitch NoNote = putWord8 129
+        putPitch n = putWord8 $ fromIntegral $ (fromEnum n) - fromEnum pitchC1
+
+        putCount c = putWord8 $ fromIntegral c + 0xa1
+
+        putSample n = putWord8 $ (maybe 0 fromIntegral $ noteSample n) + 0x60
+
+        putOrnament n = putWord8 $ (maybe 0 fromIntegral $ noteOrnament n) + 0x70
+
+        putEnv n = do
+            putWord8 $ fromIntegral $ (fromEnum $ noteEnvForm n) + 0x80
+            putWord8 $ fromIntegral $ noteEnvFreq n
+
+        doModify f i = modify (\(p,l)->(p >> f, l + i))
+
+packChannel :: Channel -> [(Note, Maybe Int)]
+packChannel ch = let g = [ (head x,length  x-1) | x <- groupBy (\_ x -> x == newNote) ch]
+                 in concat [(x, Just y):[(i, Nothing)| (i,_) <- ts] | ((x,y):ts) <- groupBy (\x y -> snd x == snd y) g]

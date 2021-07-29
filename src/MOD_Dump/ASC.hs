@@ -1,4 +1,4 @@
-module MOD_Dump.ASC (ascModule)  where
+module MOD_Dump.ASC where
 
 -- ASC module format:
     -- +0 = Delay :: Byte
