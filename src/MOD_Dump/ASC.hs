@@ -16,10 +16,10 @@ module MOD_Dump.ASC where
     -- +(`Patterns table offset`) = Pattern channels offsets :: [(Word, Word, Word)]
     -- +(`Patterns table offset`) + (`Pattern channel offset`) = Pattern data
     --
-    -- +(`Sample table offset`) = Samples' offsets :: [Word]::64
+    -- +(`Sample table offset`) = Samples' offsets :: [Word]::32
     -- +(`Sample table offset`) + (`Sample offset`) = Sample data
     --
-    -- +(`Image table offset`) = Images' offsets :: [Word]::64
+    -- +(`Image table offset`) = Images' offsets :: [Word]::32
     -- +(`Image table offset`) + (`Image offset`) = Image data
 
     -- Pattern data :: [ByteString] =
@@ -74,6 +74,7 @@ import MOD_Dump.Module
 import MOD_Dump.Utils
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
+import Data.Binary.Put
 import Data.Bits
 import Control.Monad
 import Control.Monad.Trans
@@ -81,11 +82,13 @@ import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
 import GHC.Word
 import Data.List(intercalate, transpose)
+import Debug.Trace
 
 ascModule :: Module
 ascModule = newModule
     { moduleExts = [".asc",".C"]
     , getData = getASCModuleData
+    , putData = putASCModule
     , showRow = showASCRow
     , patternSep = "---+--------+------------+------------+----------- "
     , showSample = showASCSample
@@ -108,9 +111,9 @@ getASCModuleData = do
             i1 <- peekWord16 $ ornamentsTable tables
             guard (i1 == 0x40)
 
-            let count = positionNumber $ maximum ps
+            let count = 1 + (positionNumber $ maximum ps)
             p1 <- peekWord16 $ patternsTable tables
-            guard (count * 6 + 6 == p1)
+            guard (count * 6 == p1)
 
             patterns' <- lookAhead $ getPatterns (patternsTable tables) count
 
@@ -128,6 +131,16 @@ getASCModuleData = do
                     , ornaments = ornaments'
                     , title = t
                     , author = a }
+
+putASCModule :: ModuleData -> Put
+putASCModule md = do
+    let pto = length (positions md) + if title md == "" && author md == "" then 9 else 72
+    let (ppat,lpat) = putPatterns md
+    let (psam,lsam) = putSamples $ samples md
+    let t = newTables { patternsTable = pto, samplesTable = pto+lpat, ornamentsTable = pto+lpat+lsam }
+    putHeader t md
+    ppat
+    psam
 
 getHeader :: Maybe (String, String) -> Get (Int, Int, Tables, [Position], String, String)
 getHeader ta =  do
@@ -187,6 +200,19 @@ getMaybeTandAFromPlayer = runMaybeT $ do
                     w <- getWord8
                     if w == x then skipWhile' s xs else skipWhile' s s
 
+putHeader :: Tables -> ModuleData -> Put
+putHeader t md = do
+    forM_ [delay, loopingPos] $ \f -> putWord8 $ fromIntegral $ f md
+    putWord16le $ fromIntegral $ patternsTable t
+    putWord16le $ fromIntegral $ samplesTable t
+    putWord16le $ fromIntegral $ ornamentsTable t
+    putWord8 $ fromIntegral $ length $ positions md
+    forM_ (positions md) $ \p -> putWord8 $ fromIntegral $ positionNumber p
+    when (title md /= "" || author md /= "") $ do
+        putLazyByteString $ B.pack "ASM COMPILATION OF "
+        putLazyByteString $ B.pack $ padSRight 20 $ title md
+        putLazyByteString $ B.pack $ " BY "
+        putLazyByteString $ B.pack $ padSRight 20 $ author md
 
 showASCHeader :: ModuleData -> [String]
 showASCHeader m = [ "Song type: " ++ show (mtype m)
@@ -217,6 +243,17 @@ getPatterns offset count = do
         chB <-lookAhead $ getChannel (fromIntegral b - i6)
         chC <-lookAhead $ getChannel (fromIntegral c - i6)
         return $ newPattern { patternNumber = i, patternRows = makeRowsWithShared makeShared [chA, chB, chC] }
+
+putPatterns :: ModuleData -> (Put, Int)
+putPatterns md = (putOffs >> sequence_ pput, olen +  sum plen)
+    where
+        olen = 6 * length (patterns md)
+        (pput, plen) = unzip $ map putChannel $ concatMap (channelsFromRows . patternRows) $ patterns md
+        putOffs = foldM doPutOffs olen plen
+        doPutOffs a x = do
+            putWord16le $ fromIntegral a
+            return $ a + x
+
 
 showASCRow :: Row -> String
 showASCRow r = header . (\x -> foldr showsNote x $ rowNotes r) $ ""
@@ -338,12 +375,35 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             ns <- getNotes $ x{noteCmd = NoteCmdNone}
             return $ x : replicate r newNote ++ ns
 
+putChannel :: Channel -> (Put,Int)
+putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1 255 ) (mempty, 0)
+    where
+        doPutNote :: Note -> (Note,Maybe Int) -> State (Put,Int) Note
+        doPutNote oN (nN, mc) = do
+            when (noteSample oN /= noteSample nN) $ doModifyM 0xa0 $ noteSample nN
+            when (noteOrnament oN /= noteOrnament nN) $ doModifyM 0xc0 $ noteOrnament nN
+            when (noteVolume oN /= noteVolume nN) $ doModifyM 0xe0 $ noteVolume nN
+            maybe (return ()) (\c -> doModify1 $ 0x60 + c) mc
+            doModify 1 $ putPitch $ notePitch nN
+            return nN
+
+        putPitch Release = putWord8 0x5e
+        putPitch Pause = putWord8 0x5f
+        putPitch n = putWord8 $ fromIntegral $ (fromEnum n) - fromEnum pitchAS0
+
+        doModify c f = modify (\(p, l) -> (p >> f, l + c))
+        doModify1 f = doModify 1 $ putWord8 $ fromIntegral f
+        doModifyM b (Just f) = doModify1 (b + f)
+
+
 --------------
 class InstrumentData d where
     getInstrumentData :: GetInstrumentData d
+    putInstrumentData :: PutInstrumentData d
     showsInstrumentData :: d -> ShowS
 
 type GetInstrumentData d = Int -> Get ([d], (Int, Int))
+type PutInstrumentData d = Int -> Int -> Int -> Int -> d -> Put
 
 getInstruments :: (InstrumentData d) => Int -> Get [Instrument d]
 getInstruments s = do
@@ -358,6 +418,25 @@ getInstruments s = do
             , instrumentLoopEnd = le
             }
 
+putInstruments :: (InstrumentData d) => [Instrument d] -> (Put, Int)
+putInstruments inss = (soffs >> sequence_ p, 2 * length l + sum l)
+    where
+        p::[Put]
+        (p,l) = unzip [ (evalStateT (doPutID ins) 0, 3 * length (instrumentData ins)) | ins <- inss]
+        soffs = foldM (\a x -> putWord16le (fromIntegral a) >>  return (a+x)) 64 l
+
+        doPutID ins = do
+            let ls = instrumentLoopStart ins
+            let le = instrumentLoopEnd ins
+            let inds = instrumentData ins
+            let lsd = length inds
+            forM_  inds $ \ind -> do
+                i<-get
+                lift $ putInstrumentData i ls le lsd ind
+                put $ i + 1
+
+
+
 showInstrument :: (InstrumentData d) => String -> String -> Instrument d -> [String]
 showInstrument title sep instr = padSRight (length sep) (title ++ shows32 (instrumentNumber instr) "")
                                     : sep
@@ -371,12 +450,16 @@ showInstrument title sep instr = padSRight (length sep) (title ++ shows32 (instr
 getSamples :: Int -> Get [Sample]
 getSamples = getInstruments
 
+putSamples :: [Sample] -> (Put, Int)
+putSamples = putInstruments
+
 sampleSep = "---+----+-----+------------"
 showASCSample = showInstrument "Sample: " sampleSep
 
 --------------
 instance InstrumentData SampleData where
     getInstrumentData = getSampleData
+    putInstrumentData = putSampleData
     showsInstrumentData = showsSampleData
 
 showsSampleData :: SampleData -> ShowS
@@ -415,12 +498,30 @@ getSampleData s = do
                                           sampleDataEffect = ef
                                           }) : rest
 
+putSampleData :: PutInstrumentData SampleData
+putSampleData i ls le lsd sd = do
+            putWord8
+                $ changeBit 7 (i == ls)
+                $ changeBit 6 (i == le)
+                $ changeBit 5 (i == lsd - 1)
+                $ fromIntegral $ sampleDataNoise sd
+            putWord8 $ fromIntegral $ sampleDataTone sd
+            putWord8
+                $ changeBit 0 (not $ sampleDataToneMask sd)
+                $ changeBit 3 (not $ sampleDataNoiseMask sd)
+                $ (fromSampleDataEffect $ sampleDataEffect sd) `shiftL` 1
+                .|. (fromIntegral (sampleDataVolume sd) `shiftL` 4)
+
+
 ---------------
 showsSDE :: SampleDataEffect -> ShowS
 showsSDE = lookupChar '_' [(SDEUp, '+'), (SDEDown, '-'), (SDEEnv, 'E')]
 
 toSampleDataEffect :: Int -> SampleDataEffect
 toSampleDataEffect x = maybe SDENone id $ lookup x [(1, SDEEnv), (2, SDEDown), (3, SDEUp)]
+
+fromSampleDataEffect :: SampleDataEffect -> Word8
+fromSampleDataEffect sd = maybe 0 id $ lookup sd [(SDEEnv, 1), (SDEDown, 2), (SDEUp, 3)]
 
 --------------
 getImages :: Int -> Get [Ornament]
@@ -455,3 +556,7 @@ getImageData s = do
                 return $ (newOrnamentData { ornamentDataNoise = nd, ornamentDataTone = td } ) : rest
 
 
+type PutImageData = PutInstrumentData OrnamentData
+
+--putImageData :: PutImageData
+--putImageData

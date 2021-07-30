@@ -16,14 +16,14 @@ module MOD_Dump.Elements
     , NoteCmd(..)
     , Shared, sharedEnvForm, sharedEnvFreq, sharedMask,sharedNoise, newShared
     , Note, noteCmd, notePitch, noteSample, noteOrnament, noteVolume, noteEnvForm, noteEnvFreq, noteNoise, newNote
-    , Channel
+    , Channel, packChannel
     , Row, rowNumber, rowShared, rowNotes, makeRows, makeRowsWithShared, channelsFromRows
     , Pattern, patternNumber, patternRows, newPattern
     , Tables, positionsTable, patternsTable, samplesTable, ornamentsTable, newTables
     , ModuleData, delay, loopingPos, positions, patterns, samples, ornaments, title, author, size, mtype, newModuleData
     ) where
 
-import Data.List(transpose, intercalate)
+import Data.List(transpose, intercalate, groupBy)
 import MOD_Dump.Utils
 
 data ModuleData = AModuleData
@@ -283,6 +283,11 @@ makeRows = makeRowsWithShared (const newShared)
 
 channelsFromRows :: [Row] -> [Channel]
 channelsFromRows rs = transpose [ rowNotes r | r <- rs ]
+
+packChannel :: Channel -> [(Note, Maybe Int)]
+packChannel ch = let g = [ (head x,length  x-1) | x <- groupBy (\_ x -> x == newNote) ch]
+                 in concat [(x, Just y):[(i, Nothing)| (i,_) <- ts] | ((x,y):ts) <- groupBy (\x y -> snd x == snd y) g]
+
 
 instance Show Row where
     showsPrec _ r = ('(':) . shows (rowNumber r) . (':':) .shows (rowShared r) . ('|':). showList (rowNotes r) . (')':)

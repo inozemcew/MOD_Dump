@@ -369,6 +369,3 @@ putChannel ch = execState (putNotes (packChannel ch) newNote) (mempty, 0)
 
         doModify f i = modify (\(p,l)->(p >> f, l + i))
 
-packChannel :: Channel -> [(Note, Maybe Int)]
-packChannel ch = let g = [ (head x,length  x-1) | x <- groupBy (\_ x -> x == newNote) ch]
-                 in concat [(x, Just y):[(i, Nothing)| (i,_) <- ts] | ((x,y):ts) <- groupBy (\x y -> snd x == snd y) g]

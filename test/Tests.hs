@@ -10,7 +10,8 @@ import Data.Binary.Get
 import MOD_Dump.Elements
 import MOD_Dump.Utils
 import MOD_Dump.Module
-import MOD_Dump.STC
+import qualified MOD_Dump.STC as STC
+import qualified MOD_Dump.ASC as ASC
 
 
 testElements = TestLabel "Elements" $ test
@@ -38,28 +39,41 @@ testUtils = test
 
 
 --------------------
-fName = "mods/Bulba.stc"
+stcFName = "mods/Bulba.stc"
 
 testSTC = test
             [ testSampleData
             , testSTCModule
             ]
 
-testSampleData = TestCase $ when (a /= b)  $ assertFailure $ unlines $ hexDiff a b : showSampleData [s]
+testSampleData = TestCase $ when (a /= b)  $ assertFailure $ unlines $ hexDiff a b : STC.showSampleData [s]
     where
         a = B.pack "\x0f\x0a0\x00"
-        s = runGet getSampleData $ a
-        b = runPut $ putSampleData s
+        s = runGet STC.getSampleData $ a
+        b = runPut $ STC.putSampleData s
 
-testSTCModule = TestCase $ do
+testSTCModule = testModule STC.stcModule stcFName
+
+--------------------
+ascFName = "mods/VOYAGE.asc"
+
+testASC = test
+            [ testASCModule
+            ]
+
+testASCModule = testModule ASC.ascModule ascFName
+
+--------------------
+
+testModule tm fName = TestCase $ do
     f <- B.readFile fName
-    Just (m, md) <- readModule [stcModule] fName
+    Just (m, md) <- readModule [tm] fName
     let b = runPut (putData m $ md)
     let a = (B.take (B.length b) f)
     when (a /= b)  $ assertFailure $ hexDiff a b
 
 hexDiff :: B.ByteString -> B.ByteString -> String
-hexDiff a b = hexDiff' 0 a b
+hexDiff a b = hexDiff' 0 a b ++ "\nErrors count: " ++ (show $ length $ filter (\(x,y) -> x/=y) $ B.zip a b)
     where
         hdr n = if (n `mod` 16 == 0) then ('\n':) .showsHex 4 n. (' ':) else (' ':)
         hexDiff' n a b = if B.null a || B.null b
@@ -73,4 +87,4 @@ hexDiff a b = hexDiff' 0 a b
 
 main :: IO ()
 main = do
-    runTestTTAndExit ( TestList [testElements, testUtils, testSTC] )
+    runTestTTAndExit ( TestList [testElements, testUtils, testSTC, testASC] )
