@@ -44,4 +44,4 @@ test-suite test-MOD_Dump
                        , MOD_Dump.Module
                        , MOD_Dump.STC
                        , MOD_Dump.ASC
-    build-depends:       base >=4.14 && <4.15, HUnit, mtl, binary >=0.8.0.0, bytestring, filepath, transformers
+    build-depends:       base >=4.14 && <4.15, HUnit >=1.6.1.0, mtl, binary >=0.8.0.0, bytestring, filepath, transformers
