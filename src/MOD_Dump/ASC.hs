@@ -43,7 +43,7 @@ module MOD_Dump.ASC where
         --                  | 0xf8         = Set envelope form 8 '\'
         --                  | 0xf9, n      = Port.S- command
         --                  | 0xfa         = Set envelope form 10 'V'
-        --                  | 0xfb, n      = Unknown command, consumes 1 byte
+        --                  | 0xfb, n      = Volume slide 1..1f bit5 = sign
         --                  | 0xfc         = Set envelope form 12 '/'
         --                  | 0xfe         = Set envelope form 14 '^'
 
@@ -137,10 +137,12 @@ putASCModule md = do
     let pto = length (positions md) + if title md == "" && author md == "" then 9 else 72
     let (ppat,lpat) = putPatterns md
     let (psam,lsam) = putSamples $ samples md
+    let (pimg,_)    = putImages $ ornaments md
     let t = newTables { patternsTable = pto, samplesTable = pto+lpat, ornamentsTable = pto+lpat+lsam }
     putHeader t md
     ppat
     psam
+    pimg
 
 getHeader :: Maybe (String, String) -> Get (Int, Int, Tables, [Position], String, String)
 getHeader ta =  do
@@ -355,7 +357,9 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             | x == 0xf8 = getNotes $ n{ noteEnvForm = EnvFormRepDecay }           -- Set envelope form 8 '\'
             | x == 0xf9 = setCmd NoteCmdPorta                                     -- Port.S- command
             | x == 0xfa = getNotes $ n{ noteEnvForm = EnvFormRepDecayAttack }     -- Set envelope form 10 'V'
-            | x == 0xfb = lift getWord8 >> getNotes n                             -- Unknown command, consumes 1 byte
+            | x == 0xfb = do                                                      -- Volume slide
+                d <- lift getWord8
+                getNotes $ n{ noteCmd = NoteCmdVolSlide $ intExpand 32 d}
             | x == 0xfc = getNotes $ n{ noteEnvForm = EnvFormRepAttack }          -- Set envelope form 12 '/'
             | x == 0xfe = getNotes $ n{ noteEnvForm = EnvFormRepAttackDecay }     -- Set envelope form 14 '^'
             | otherwise = getNotes n
@@ -383,23 +387,50 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
             when (noteSample oN /= noteSample nN) $ doModifyM 0xa0 $ noteSample nN
             when (noteOrnament oN /= noteOrnament nN) $ doModifyM 0xc0 $ noteOrnament nN
             when (noteVolume oN /= noteVolume nN) $ doModifyM 0xe0 $ noteVolume nN
+            when (noteNoise oN /= noteNoise nN) $ doModifyC 0xf0 $ fromIntegral $ noteNoise nN
+            when (noteEnvForm oN /= noteEnvForm nN)
+                $ doModify1 $ 0xf0 + (fromEnum $ noteEnvForm nN)
             maybe (return ()) (\c -> doModify1 $ 0x60 + c) mc
+            when (noteCmd nN /= NoteCmdNone) $ putNoteCmd nN
             doModify 1 $ putPitch $ notePitch nN
+            when (noteVolume nN == Just 0 &&  all (/= notePitch nN) [Release,Pause,NoNote])
+                $ doModify1 $ noteEnvFreq nN
             return nN
 
         putPitch Release = putWord8 0x5e
         putPitch Pause = putWord8 0x5f
+        putPitch NoNote = putWord8 0x5d
         putPitch n = putWord8 $ fromIntegral $ (fromEnum n) - fromEnum pitchAS0
 
+        putNoteCmd nN = case noteCmd nN of
+                             NoteCmdHldSample  -> doModify1 0xf1
+                             NoteCmdHldImage   -> doModify1 0xf2
+                             NoteCmdHldInstr   -> doModify1 0xf3
+                             NoteCmdDelay    n -> doModifyC 0xf4 $ fromIntegral n
+                             NoteCmdGlisUp   n -> doModifyC 0xf5 $ fromIntegral n
+                             NoteCmdGlisDn   n -> doModifyC 0xf6 $ fromIntegral n
+                             NoteCmdPortaR   n -> doModifyC 0xf7 $ fromIntegral n
+                             NoteCmdPorta    n -> doModifyC 0xf9 $ fromIntegral n
+                             NoteCmdVolSlide n -> doModifyC 0xfb $ intShrink 32 n
+                             _ -> return ()
+
         doModify c f = modify (\(p, l) -> (p >> f, l + c))
+
         doModify1 f = doModify 1 $ putWord8 $ fromIntegral f
+
         doModifyM b (Just f) = doModify1 (b + f)
+        doModifyM _ Nothing = return ()
+
+        doModifyC c n = doModify 2 $ do
+            putWord8 c
+            putWord8 n
 
 
 --------------
 class InstrumentData d where
     getInstrumentData :: GetInstrumentData d
     putInstrumentData :: PutInstrumentData d
+    sizeInstrumentData :: [d] -> Int
     showsInstrumentData :: d -> ShowS
 
 type GetInstrumentData d = Int -> Get ([d], (Int, Int))
@@ -422,7 +453,7 @@ putInstruments :: (InstrumentData d) => [Instrument d] -> (Put, Int)
 putInstruments inss = (soffs >> sequence_ p, 2 * length l + sum l)
     where
         p::[Put]
-        (p,l) = unzip [ (evalStateT (doPutID ins) 0, 3 * length (instrumentData ins)) | ins <- inss]
+        (p,l) = unzip [ (evalStateT (doPutID ins) 0, sizeInstrumentData (instrumentData ins)) | ins <- inss]
         soffs = foldM (\a x -> putWord16le (fromIntegral a) >>  return (a+x)) 64 l
 
         doPutID ins = do
@@ -460,6 +491,7 @@ showASCSample = showInstrument "Sample: " sampleSep
 instance InstrumentData SampleData where
     getInstrumentData = getSampleData
     putInstrumentData = putSampleData
+    sizeInstrumentData = sizeSampleData
     showsInstrumentData = showsSampleData
 
 showsSampleData :: SampleData -> ShowS
@@ -512,6 +544,8 @@ putSampleData i ls le lsd sd = do
                 $ (fromSampleDataEffect $ sampleDataEffect sd) `shiftL` 1
                 .|. (fromIntegral (sampleDataVolume sd) `shiftL` 4)
 
+sizeSampleData :: [SampleData] -> Int
+sizeSampleData sds = 3 * length sds
 
 ---------------
 showsSDE :: SampleDataEffect -> ShowS
@@ -527,19 +561,22 @@ fromSampleDataEffect sd = maybe 0 id $ lookup sd [(SDEEnv, 1), (SDEDown, 2), (SD
 getImages :: Int -> Get [Ornament]
 getImages = getInstruments
 
+putImages :: [Ornament] -> (Put, Int)
+putImages = putInstruments
+
 imageSep = "---+----+-----+-----"
 showASCImage = showInstrument "Image: " imageSep
 
 --------------
 instance InstrumentData OrnamentData where
     getInstrumentData = getImageData
+    putInstrumentData = putImageData
+    sizeInstrumentData = sizeImageData
     showsInstrumentData = showsImageData
 
 showsImageData im = showsSgnInt 3 (ornamentDataNoise im) . ( " | " ++ ) . showsSgnInt 4 (ornamentDataTone im)
 
-type GetImageData = GetInstrumentData OrnamentData
-
-getImageData :: GetImageData
+getImageData :: GetInstrumentData OrnamentData
 getImageData s = do
     skip s
     runStateT (doGetImageData 0) (0,0)
@@ -555,8 +592,14 @@ getImageData s = do
                 rest <-  if (testBit b0 5) then return [] else doGetImageData (i+1)
                 return $ (newOrnamentData { ornamentDataNoise = nd, ornamentDataTone = td } ) : rest
 
+putImageData ::  PutInstrumentData OrnamentData
+putImageData i ls le lsd od = do
+    putWord8
+        $ changeBit 7 (i == ls)
+        $ changeBit 6 (i == le)
+        $ changeBit 5 (i == lsd - 1)
+        $ fromIntegral $ ornamentDataNoise od
+    putWord8 $ fromIntegral $ ornamentDataTone od
 
-type PutImageData = PutInstrumentData OrnamentData
-
---putImageData :: PutImageData
---putImageData
+sizeImageData :: [OrnamentData] -> Int
+sizeImageData ids = 2 * length ids

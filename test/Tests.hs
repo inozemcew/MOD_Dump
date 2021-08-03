@@ -55,7 +55,7 @@ testSampleData = TestCase $ when (a /= b)  $ assertFailure $ unlines $ hexDiff a
 testSTCModule = testModule STC.stcModule stcFName
 
 --------------------
-ascFName = "mods/VOYAGE.asc"
+ascFName = "mods/SKY_SURF.asc"
 
 testASC = test
             [ testASCModule

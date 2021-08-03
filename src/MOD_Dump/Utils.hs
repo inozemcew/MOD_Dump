@@ -94,3 +94,9 @@ whileM c m = do
 
 changeBit :: (Bits a) => Int -> Bool -> a -> a
 changeBit b f n = if f then setBit n b else clearBit n b
+
+intExpand :: (Integral a) => Int -> a -> Int
+intExpand size n = let x = fromIntegral n in  if x < size then x else x - size * 2
+
+intShrink :: (Num a) => Int -> Int -> a
+intShrink size x = fromIntegral $ if x>=0 then x else x + 2 * size

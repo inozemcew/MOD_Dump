@@ -207,6 +207,7 @@ data NoteCmd = NoteCmdNone
              | NoteCmdOrnamentOffset Int
              | NoteCmdVibrato Int Int
              | NoteCmdEnvSlide Int Int
+             | NoteCmdVolSlide Int
                deriving (Eq)
 
 instance Show NoteCmd where
@@ -225,6 +226,7 @@ instance Show NoteCmd where
                   NoteCmdOrnamentOffset o -> showString "O=" .shows2 o
                   NoteCmdVibrato on off -> showString "V=" .shows on .(':':) .shows off
                   NoteCmdEnvSlide d e -> showString "E=" .shows d .(':':) .shows2 e
+                  NoteCmdVolSlide s -> showString "A" . showsSgnInt 2 s
                   _ -> showString "----"
 
 data Shared = AShared
