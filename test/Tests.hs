@@ -12,12 +12,16 @@ import MOD_Dump.Utils
 import MOD_Dump.Module
 import qualified MOD_Dump.STC as STC
 import qualified MOD_Dump.ASC as ASC
+import qualified MOD_Dump.PT2 as PT2
 
 
 testElements = TestLabel "Elements" $ test
-                [ TestCase(assertEqual "Low note" "<C--1>" (show (minBound::Pitch)))
-                , TestCase(assertEqual "Hi note" "<B-10>" (show (maxBound::Pitch)))
-                ]
+    [ TestCase(assertEqual "Low note" "<C--1>" (show (minBound::Pitch)))
+    , TestCase(assertEqual "Hi note" "<B-10>" (show (maxBound::Pitch)))
+    , TestCase(assertBool "NewInstrument " $ (isEmptyInstrument $ newInstrument))
+    , TestCase(assertBool "NewInstrument with Number" $ isEmptyInstrument $ newInstrument {instrumentNumber = 5})
+    , TestCase(assertBool "ModifiedInstrument " $ not $ isEmptyInstrument $ newInstrument {instrumentLoopStart = 5})
+    ]
 
 
 --------------------
@@ -37,25 +41,21 @@ testUtils = test
             , testShowsSgnInt
             ]
 
-
 --------------------
-stcFName = "mods/Bulba.stc"
+stcFNames = [ "Bulba.stc", "AC-DC.stc" ]
 
-testSTC = test
-            [ testSampleData
-            , testSTCModule
-            ]
+testSTC = test $ testSTCSampleData : testSTCModules
 
-testSampleData = TestCase $ when (a /= b)  $ assertFailure $ unlines $ hexDiff a b : STC.showSampleData [s]
+testSTCSampleData = TestCase $ when (a /= b)  $ assertFailure $ unlines $ hexDiff a b : STC.showSampleData [s]
     where
         a = B.pack "\x0f\x0a0\x00"
         s = runGet STC.getSampleData $ a
         b = runPut $ STC.putSampleData s
 
-testSTCModule = testModule STC.stcModule stcFName
+testSTCModules = map (testModule STC.stcModule) stcFNames
 
 --------------------
-ascFName = "mods/SKY_SURF.asc"
+ascFName = "SKY_SURF.asc"
 
 testASC = test
             [ testASCModule
@@ -64,13 +64,54 @@ testASC = test
 testASCModule = testModule ASC.ascModule ascFName
 
 --------------------
+pt2FNames = ["MEGAHERZ.pt2","Grave 3.0.pt2"]
+
+testPT2 = test $ map testPT2Module pt2FNames ++
+            [ testInstrumentData pt2SampleDataNotes pt2SampleDataBytes
+            , testInstrumentData pt2OrnamentDataNotes pt2OrnamentDataBytes
+            ]
+
+pt2SampleDataBytes = map B.pack
+    $  [ c:"\x00\x00" | c <- "\x00\x01\x02\x03\x78\x79\x7a\x7b\xf8\xf9\xfa\xfb" ]
+    ++ [ c:"\x0f\xff" | c <- "\x04\x05\x06\x07\x7c\x7d\x7e\x7f\xfc\xfd\xfe\xff" ]
+    ++ [ c:"\x0f\xff" | c <- "\x00\x01\x02\x03\x78\x79\x7a\x7b\xf8\xf9\xfa\xfb" ]
+    ++ [ c:"\xf0\x00" | c <- "\x00\x01\x02\x03\x78\x79\x7a\x7b\xf8\xf9\xfa\xfb" ]
+    ++ [ c:"\xff\xff" | c <- "\x04\x05\x06\x07\x7c\x7d\x7e\x7f\xfc\xfd\xfe\xff" ]
+    ++ [ c:"\xff\xff" | c <- "\x00\x01\x02\x03\x78\x79\x7a\x7b\xf8\xf9\xfa\xfb" ]
+pt2SampleDataNotes = [ newSampleData
+                        { sampleDataVolume = v
+                        , sampleDataToneEnable = te
+                        , sampleDataTone = t
+                        , sampleDataNoiseEnable = ne
+                        , sampleDataNoise = n
+                        } | v <- [0, 15]
+                          , t <- [0, -0xfff, 0xfff]
+                          , n <- [0, 15, 31]
+                          , te <- [True, False]
+                          , ne <- [True, False]
+                ]
+
+pt2OrnamentDataBytes = map B.pack [[c] | c<- ['\x00'..'\xff'] ]
+pt2OrnamentDataNotes = [ newOrnamentData { ornamentDataTone = x} | x <- [0..127] ++ [(-128)..(-1)] ]
+
+testInstrumentData notes bytes = TestCase $ mapM_ doTest $ zip notes bytes
+    where
+        doTest (n,b) = do
+            let a = runPut $ fst $ PT2.putInstrumentData [n]
+            let m = runGet PT2.getInstrumentData b
+            when (a /= b) $ assertFailure $ unlines $ "Wrong put" : hexDiff a b : PT2.showInstrumentData [n]
+            when (m /= n) $ assertFailure $ unlines $ "Wrong get" : hexDiff a b : PT2.showInstrumentData [n,m]
+
+testPT2Module = testModule PT2.pt2Module
+
+---------------------
 
 testModule tm fName = TestCase $ do
-    f <- B.readFile fName
-    Just (m, md) <- readModule [tm] fName
+    f <- B.readFile $ "mods/" ++ fName
+    Just (m, md) <- readModule [tm] $ "mods/" ++ fName
     let b = runPut (putData m $ md)
     let a = (B.take (B.length b) f)
-    when (a /= b)  $ assertFailure $ hexDiff a b
+    when (a /= b)  $ assertFailure $ fName ++ " - module test failed\n" ++ hexDiff a b
 
 hexDiff :: B.ByteString -> B.ByteString -> String
 hexDiff a b = hexDiff' 0 a b ++ "\nErrors count: " ++ (show $ length $ filter (\(x,y) -> x/=y) $ B.zip a b)
@@ -87,4 +128,4 @@ hexDiff a b = hexDiff' 0 a b ++ "\nErrors count: " ++ (show $ length $ filter (\
 
 main :: IO ()
 main = do
-    runTestTTAndExit ( TestList [testElements, testUtils, testSTC, testASC] )
+    runTestTTAndExit ( TestList [testElements, testUtils, testSTC, testASC, testPT2] )

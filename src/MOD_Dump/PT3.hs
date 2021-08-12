@@ -105,12 +105,14 @@ getNotes note = do
                 | x == 0xc0 = yieldNotes $ note { notePitch = Pause }
                 | x >= 0xb2 = do
                                 freq <- lift getWord16be -- reverse byte order here
-                                getNotes $ note { noteEnvForm = toEnum (x - 0xb0), noteEnvFreq = fromIntegral freq }
+                                getNotes $ note { noteEnvForm = Just $ toEnum (x - 0xb0)
+                                                , noteEnvFreq = fromIntegral freq
+                                                }
                 | x == 0xb1 = do
                                 s <- lift getWord8
                                 modify $ \(_, fx) -> (fromIntegral s - 1, fx)
                                 getNotes note
-                | x == 0xb0 = getNotes $ note { noteEnvForm = EnvFormNone }
+                | x == 0xb0 = getNotes $ note { noteEnvForm = noEnvForm }
                 | x >= 0x50 = yieldNotes $ note { notePitch = toEnum $ x - 0x50 + fromEnum pitchC1 }
                 | x >= 0x40 = getNotes $ note { noteOrnament = Just (x - 0x40) }
                 | x >= 0x20 = getNotes $ note { noteNoise = x - 0x20 }
@@ -118,7 +120,7 @@ getNotes note = do
                                 e <- lift getWord16be
                                 s <- lift getWord8
                                 getNotes note
-                                    { noteEnvForm = toEnum (x - 0x10)
+                                    { noteEnvForm = Just $ toEnum (x - 0x10)
                                     , noteEnvFreq = fromIntegral e
                                     , noteSample = Just $ fromIntegral (s `div` 2)
                                     }
@@ -194,9 +196,9 @@ showsNote n = showsPitch (notePitch n) .(' ':)
         showsCmd (NoteCmdDelay x) = showString "B0" . showsHex 2 x
         showsCmd _ = showString "0000"
 
-        showsEForm = if noteEnvForm n /= EnvFormNone
-                        then showsHex 1 (fromEnum $ noteEnvForm n)
-                        else maybe ('0':) (const ('F':)) $  noteOrnament n
+        showsEForm = if noteEnvForm n `elem` [Nothing, noEnvForm]
+                        then maybe ('0':) (const ('F':)) $  noteOrnament n
+                        else let (Just ef) =  noteEnvForm n in showsHex 1 $ fromEnum ef
 
 
 ---------------------------------
@@ -235,12 +237,12 @@ getSampleData = do
     let nAcc = testBit b2 5
     tFreq <- fromIntegral <$> getInt16le
     return $ newSampleData
-        { sampleDataNoise     = fromIntegral $ 31 .&. shiftR b1 1
-        , sampleDataTone      = tFreq
-        , sampleDataVolume    = fromIntegral $ 15 .&. b2
-        , sampleDataNoiseMask = not $ testBit b2 7
-        , sampleDataToneMask  = not $ testBit b2 4
-        , sampleDataEnvMask   = not $ testBit b1 0
+        { sampleDataNoise       = fromIntegral $ 31 .&. shiftR b1 1
+        , sampleDataTone        = tFreq
+        , sampleDataVolume      = fromIntegral $ 15 .&. b2
+        , sampleDataNoiseEnable = not $ testBit b2 7
+        , sampleDataToneEnable  = not $ testBit b2 4
+        , sampleDataEnvEnable   = not $ testBit b1 0
         , sampleDataEffect = case (testBit b1 7, testBit b1 6) of
                                     (True, False) -> SDEDown
                                     (True, True) -> SDEUp
@@ -270,9 +272,9 @@ showSampleData l sds = [ shows2 i
                             f2 = '0'
                             f3 = '0'
                        in \x -> f1:f2:f3:x
-        showsMasks s = \x -> showMask 'T' (sampleDataToneMask s)
-            : showMask 'N' (sampleDataNoiseMask s)
-            : showMask 'E' (sampleDataEnvMask s )
+        showsMasks s = \x -> showMask 'T' (sampleDataToneEnable s)
+            : showMask 'N' (sampleDataNoiseEnable s)
+            : showMask 'E' (sampleDataEnvEnable s )
             : x
         showMask c m = if m then c else '-'
         showsVol v = showString (concat $ replicate v "#") . showString (concat $ replicate (16 - v) ".") . (' ':) .showsHex 1 v

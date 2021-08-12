@@ -134,30 +134,34 @@ getASCModuleData = do
 
 putASCModule :: ModuleData -> Put
 putASCModule md = do
-    let pto = length (positions md) + if title md == "" && author md == "" then 9 else 72
-    let (ppat,lpat) = putPatterns md
-    let (psam,lsam) = putSamples $ samples md
-    let (pimg,_)    = putImages $ ornaments md
-    let t = newTables { patternsTable = pto, samplesTable = pto+lpat, ornamentsTable = pto+lpat+lsam }
+    let patternsTableOffset = length (positions md) + if all null [title md, author md] then 9 else 72
+    let (doPutPatterns, patternsLength) = putPatterns md
+    let (doPutSamples,  samplesLength)  = putSamples $ samples md
+    let (doPutImages,_)                 = putImages $ ornaments md
+    let t = newTables
+            { patternsTable  = patternsTableOffset
+            , samplesTable   = patternsTableOffset + patternsLength
+            , ornamentsTable = patternsTableOffset + patternsLength + samplesLength
+            }
     putHeader t md
-    ppat
-    psam
-    pimg
+    doPutPatterns
+    doPutSamples
+    doPutImages
 
 getHeader :: Maybe (String, String) -> Get (Int, Int, Tables, [Position], String, String)
 getHeader ta =  do
-        d <- fromIntegral `liftM` getWord8
-        l <- fromIntegral `liftM` getWord8
+        d <- getAsWord8
+        l <- getAsWord8
 
-        p <- fromIntegral `liftM` getWord16le
-        s <- fromIntegral `liftM` getWord16le
-        o <- fromIntegral `liftM` getWord16le
+        p <- getAsWord16le
+        s <- getAsWord16le
+        o <- getAsWord16le
         let tables = newTables{ patternsTable = p, samplesTable = s, ornamentsTable = o }
 
-        n <- fromIntegral `liftM` getWord8
+        n <- getAsWord8
         ps <- replicateM n $  do
-            x <- getWord8
-            return $ newPosition { positionNumber = fromIntegral x }
+            x <- getAsWord8
+            return $ newPosition { positionNumber = x }
 
         (t,a) <- maybe (getTAndA p ps) return ta
         return (d, l, tables, ps, t, a)
@@ -204,13 +208,13 @@ getMaybeTandAFromPlayer = runMaybeT $ do
 
 putHeader :: Tables -> ModuleData -> Put
 putHeader t md = do
-    forM_ [delay, loopingPos] $ \f -> putWord8 $ fromIntegral $ f md
-    putWord16le $ fromIntegral $ patternsTable t
-    putWord16le $ fromIntegral $ samplesTable t
-    putWord16le $ fromIntegral $ ornamentsTable t
-    putWord8 $ fromIntegral $ length $ positions md
-    forM_ (positions md) $ \p -> putWord8 $ fromIntegral $ positionNumber p
-    when (title md /= "" || author md /= "") $ do
+    forM_ [delay, loopingPos] $ \f -> putAsWord8 $ f md
+    putAsWord16le $ patternsTable t
+    putAsWord16le $ samplesTable t
+    putAsWord16le $ ornamentsTable t
+    putAsWord8 $ length $ positions md
+    forM_ (positions md) $ putAsWord8 . positionNumber
+    when (any (not.null) [title md, author md]) $ do
         putLazyByteString $ B.pack "ASM COMPILATION OF "
         putLazyByteString $ B.pack $ padSRight 20 $ title md
         putLazyByteString $ B.pack $ " BY "
@@ -229,31 +233,29 @@ showASCHeader m = [ "Song type: " ++ show (mtype m)
 
 showPosition pn = '{' : shows (positionNumber pn) "}"
 
----------------
---showASCPattern :: Pattern -> [String]
---showASCPattern p = padSRight (length patternSep) (show p) : patternSep : map showRow (patternRows p) ++ [patternSep, ""]
-
+------------------
 getPatterns:: Int -> Int -> Get [Pattern]
 getPatterns offset count = do
     skip offset
     forM [0..count-1] $ \i -> do
-        a <- getWord16le
-        b <- getWord16le
-        c <- getWord16le
+        a <- getAsWord16le
+        b <- getAsWord16le
+        c <- getAsWord16le
         let i6 = i * 6 + 6
-        chA <-lookAhead $ getChannel (fromIntegral a - i6)
-        chB <-lookAhead $ getChannel (fromIntegral b - i6)
-        chC <-lookAhead $ getChannel (fromIntegral c - i6)
+        chA <-lookAhead $ getChannel (a - i6)
+        chB <-lookAhead $ getChannel (b - i6)
+        chC <-lookAhead $ getChannel (c - i6)
         return $ newPattern { patternNumber = i, patternRows = makeRowsWithShared makeShared [chA, chB, chC] }
 
+
 putPatterns :: ModuleData -> (Put, Int)
-putPatterns md = (putOffs >> sequence_ pput, olen +  sum plen)
+putPatterns md = (putOffs >> sequence_ pput, paternsOffsetsTableLength +  sum patternsLengths)
     where
-        olen = 6 * length (patterns md)
-        (pput, plen) = unzip $ map putChannel $ concatMap (channelsFromRows . patternRows) $ patterns md
-        putOffs = foldM doPutOffs olen plen
+        paternsOffsetsTableLength = 6 * length (patterns md)
+        (pput, patternsLengths) = unzip $ map putChannel $ concatMap (channelsFromRows . patternRows) $ patterns md
+        putOffs = foldM doPutOffs paternsOffsetsTableLength patternsLengths
         doPutOffs a x = do
-            putWord16le $ fromIntegral a
+            putAsWord16le a
             return $ a + x
 
 
@@ -283,8 +285,14 @@ showsNoteCmd _           = showChar '#'
 showsEnvFreq :: EnvFreq -> ShowS
 showsEnvFreq x = if x == 0 then ("___" ++) else shows3 x
 
-showsEnvForm :: EnvForm -> ShowS
-showsEnvForm = lookupChar '_' [(EnvFormRepDecay, '\\'), (EnvFormRepDecayAttack, 'V'), (EnvFormRepAttack, '/'), (EnvFormRepAttackDecay, '^')]
+showsEnvForm :: Maybe EnvForm -> ShowS
+showsEnvForm Nothing = showChar '_'
+showsEnvForm (Just x) = lookupChar '_'
+                        [ (EnvFormRepDecay, '\\')
+                        , (EnvFormRepDecayAttack, 'V')
+                        , (EnvFormRepAttack, '/')
+                        , (EnvFormRepAttackDecay, '^')
+                        ] x
 
 showsNoiseMask :: ChannelMask -> ShowS
 showsNoiseMask x = if x == noChannelMask then ('_':) else showsB 1 $ channelMaskValue x
@@ -329,8 +337,8 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
     where
         getNewNotes = getNotes newNote
         getNotes n = do
-            v <- lift getWord8
-            switch n $ fromIntegral v
+            v <- lift getAsWord8
+            switch n v
 
         switch n x
             | x == 255 = return []                                              -- End of pattern
@@ -354,19 +362,19 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             | x == 0xf5 = setCmd NoteCmdGlisUp                                    -- GlisUp command
             | x == 0xf6 = setCmd NoteCmdGlisDn                                    -- GlisDn command
             | x == 0xf7 = setCmd NoteCmdPortaR                                    -- Port.S+ command
-            | x == 0xf8 = getNotes $ n{ noteEnvForm = EnvFormRepDecay }           -- Set envelope form 8 '\'
+            | x == 0xf8 = getNotes $ n{ noteEnvForm = Just EnvFormRepDecay }           -- Set envelope form 8 '\'
             | x == 0xf9 = setCmd NoteCmdPorta                                     -- Port.S- command
-            | x == 0xfa = getNotes $ n{ noteEnvForm = EnvFormRepDecayAttack }     -- Set envelope form 10 'V'
+            | x == 0xfa = getNotes $ n{ noteEnvForm = Just EnvFormRepDecayAttack }     -- Set envelope form 10 'V'
             | x == 0xfb = do                                                      -- Volume slide
                 d <- lift getWord8
                 getNotes $ n{ noteCmd = NoteCmdVolSlide $ intExpand 32 d}
-            | x == 0xfc = getNotes $ n{ noteEnvForm = EnvFormRepAttack }          -- Set envelope form 12 '/'
-            | x == 0xfe = getNotes $ n{ noteEnvForm = EnvFormRepAttackDecay }     -- Set envelope form 14 '^'
+            | x == 0xfc = getNotes $ n{ noteEnvForm = Just EnvFormRepAttack }          -- Set envelope form 12 '/'
+            | x == 0xfe = getNotes $ n{ noteEnvForm = Just EnvFormRepAttackDecay }     -- Set envelope form 14 '^'
             | otherwise = getNotes n
             where
                 setCmd c = do
-                    d <- lift getWord8
-                    getNotes $ n{ noteCmd = c $ fromIntegral d }
+                    d <- lift getAsWord8
+                    getNotes $ n{ noteCmd = c $ d }
 
         yieldNote x = do
             e <- if (noteVolume x == Just 0)
@@ -387,43 +395,43 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
             when (noteSample oN /= noteSample nN) $ doModifyM 0xa0 $ noteSample nN
             when (noteOrnament oN /= noteOrnament nN) $ doModifyM 0xc0 $ noteOrnament nN
             when (noteVolume oN /= noteVolume nN) $ doModifyM 0xe0 $ noteVolume nN
-            when (noteNoise oN /= noteNoise nN) $ doModifyC 0xf0 $ fromIntegral $ noteNoise nN
+            when (noteNoise oN /= noteNoise nN) $ doModifyC 0xf0 $ noteNoise nN
             when (noteEnvForm oN /= noteEnvForm nN)
-                $ doModify1 $ 0xf0 + (fromEnum $ noteEnvForm nN)
+                $ doModifyM  0xf0 $ (fromEnum <$> noteEnvForm nN)
             maybe (return ()) (\c -> doModify1 $ 0x60 + c) mc
             when (noteCmd nN /= NoteCmdNone) $ putNoteCmd nN
-            doModify 1 $ putPitch $ notePitch nN
+            doModify1 $ putPitch $ notePitch nN
             when (noteVolume nN == Just 0 &&  all (/= notePitch nN) [Release,Pause,NoNote])
                 $ doModify1 $ noteEnvFreq nN
             return nN
 
-        putPitch Release = putWord8 0x5e
-        putPitch Pause = putWord8 0x5f
-        putPitch NoNote = putWord8 0x5d
-        putPitch n = putWord8 $ fromIntegral $ (fromEnum n) - fromEnum pitchAS0
+        putPitch Release = 0x5e
+        putPitch Pause = 0x5f
+        putPitch NoNote = 0x5d
+        putPitch n = fromEnum n - fromEnum pitchAS0
 
         putNoteCmd nN = case noteCmd nN of
                              NoteCmdHldSample  -> doModify1 0xf1
                              NoteCmdHldImage   -> doModify1 0xf2
                              NoteCmdHldInstr   -> doModify1 0xf3
-                             NoteCmdDelay    n -> doModifyC 0xf4 $ fromIntegral n
-                             NoteCmdGlisUp   n -> doModifyC 0xf5 $ fromIntegral n
-                             NoteCmdGlisDn   n -> doModifyC 0xf6 $ fromIntegral n
-                             NoteCmdPortaR   n -> doModifyC 0xf7 $ fromIntegral n
-                             NoteCmdPorta    n -> doModifyC 0xf9 $ fromIntegral n
+                             NoteCmdDelay    n -> doModifyC 0xf4 n
+                             NoteCmdGlisUp   n -> doModifyC 0xf5 n
+                             NoteCmdGlisDn   n -> doModifyC 0xf6 n
+                             NoteCmdPortaR   n -> doModifyC 0xf7 n
+                             NoteCmdPorta    n -> doModifyC 0xf9 n
                              NoteCmdVolSlide n -> doModifyC 0xfb $ intShrink 32 n
                              _ -> return ()
 
-        doModify c f = modify (\(p, l) -> (p >> f, l + c))
+        doModify c f = modify $ \(p, l) -> (p >> f, l + c)
 
-        doModify1 f = doModify 1 $ putWord8 $ fromIntegral f
+        doModify1 f = doModify 1 $ putAsWord8 f
 
         doModifyM b (Just f) = doModify1 (b + f)
         doModifyM _ Nothing = return ()
 
         doModifyC c n = doModify 2 $ do
             putWord8 c
-            putWord8 n
+            putAsWord8 n
 
 
 --------------
@@ -454,7 +462,7 @@ putInstruments inss = (soffs >> sequence_ p, 2 * length l + sum l)
     where
         p::[Put]
         (p,l) = unzip [ (evalStateT (doPutID ins) 0, sizeInstrumentData (instrumentData ins)) | ins <- inss]
-        soffs = foldM (\a x -> putWord16le (fromIntegral a) >>  return (a+x)) 64 l
+        soffs = foldM (\a x -> putAsWord16le a >>  return (a+x)) 64 l
 
         doPutID ins = do
             let ls = instrumentLoopStart ins
@@ -500,8 +508,8 @@ showsSampleData sd = showsSgnInt 3 (sampleDataNoise sd) . ( " | " ++ )
     . shows2 (sampleDataVolume sd) . (' ':)
     . showsTM . showsNM . showsSDE (sampleDataEffect sd)
     where
-        showsTM = if sampleDataToneMask sd then ('T':) else ('_':)
-        showsNM = if sampleDataNoiseMask sd then ('N':) else ('_':)
+        showsTM = if sampleDataToneEnable sd then ('T':) else ('_':)
+        showsNM = if sampleDataNoiseEnable sd then ('N':) else ('_':)
 
 getSampleData :: GetInstrumentData SampleData
 getSampleData s = do
@@ -525,8 +533,8 @@ getSampleData s = do
                 return $ (newSampleData { sampleDataNoise = nd,
                                           sampleDataTone = td,
                                           sampleDataVolume = v,
-                                          sampleDataNoiseMask = nm,
-                                          sampleDataToneMask = tm,
+                                          sampleDataNoiseEnable = nm,
+                                          sampleDataToneEnable = tm,
                                           sampleDataEffect = ef
                                           }) : rest
 
@@ -537,10 +545,10 @@ putSampleData i ls le lsd sd = do
                 $ changeBit 6 (i == le)
                 $ changeBit 5 (i == lsd - 1)
                 $ fromIntegral $ sampleDataNoise sd
-            putWord8 $ fromIntegral $ sampleDataTone sd
+            putAsWord8 $ sampleDataTone sd
             putWord8
-                $ changeBit 0 (not $ sampleDataToneMask sd)
-                $ changeBit 3 (not $ sampleDataNoiseMask sd)
+                $ changeBit 0 (not $ sampleDataToneEnable sd)
+                $ changeBit 3 (not $ sampleDataNoiseEnable sd)
                 $ (fromSampleDataEffect $ sampleDataEffect sd) `shiftL` 1
                 .|. (fromIntegral (sampleDataVolume sd) `shiftL` 4)
 
@@ -599,7 +607,7 @@ putImageData i ls le lsd od = do
         $ changeBit 6 (i == le)
         $ changeBit 5 (i == lsd - 1)
         $ fromIntegral $ ornamentDataNoise od
-    putWord8 $ fromIntegral $ ornamentDataTone od
+    putAsWord8 $ ornamentDataTone od
 
 sizeImageData :: [OrnamentData] -> Int
 sizeImageData ids = 2 * length ids

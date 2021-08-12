@@ -2,9 +2,9 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 module MOD_Dump.Elements
-    ( Instrument, instrumentNumber, instrumentData, instrumentLoopStart, instrumentLoopEnd, newInstrument
+    ( Instrument, instrumentNumber, instrumentData, instrumentLoopStart, instrumentLoopEnd, newInstrument, isEmptyInstrument
     , Sample, sampleNumber, sampleData, sampleLoopStart, sampleLoopEnd, newSample
-    , SampleData, sampleDataVolume, sampleDataToneMask, sampleDataNoiseMask, sampleDataEnvMask, sampleDataTone, sampleDataNoise, sampleDataEffect, newSampleData
+    , SampleData, sampleDataVolume, sampleDataToneEnable, sampleDataNoiseEnable, sampleDataEnvEnable, sampleDataTone, sampleDataNoise, sampleDataEffect, newSampleData
     , SampleDataEffect(SDENone, SDEEnv, SDEDown, SDEUp)
     , Ornament, ornamentNumber, ornamentData, ornamentLoopStart, ornamentLoopEnd, newOrnament
     , OrnamentData, ornamentDataTone, ornamentDataNoise, newOrnamentData
@@ -138,7 +138,7 @@ data EnvForm = EnvFormNone
              | EnvFormAttackSus
              | EnvFormRepAttackDecay deriving (Eq)
 
-noEnvForm = EnvFormNone
+noEnvForm = Just EnvFormNone
 
 instance Enum EnvForm where
     toEnum x | (x >= 0 && x <= 3) || x == 9  = EnvFormDecay
@@ -152,7 +152,6 @@ instance Enum EnvForm where
              | otherwise = EnvFormNone
 
     fromEnum x = case x of
-                    EnvFormNone -> (-1)
                     EnvFormDecay -> 9
                     EnvFormAttack -> 15
                     EnvFormRepDecay -> 8
@@ -161,6 +160,7 @@ instance Enum EnvForm where
                     EnvFormRepAttack -> 12
                     EnvFormAttackSus -> 13
                     EnvFormRepAttackDecay ->14
+                    EnvFormNone -> 15
 
 instance Show EnvForm where
     show e = case e of
@@ -231,12 +231,12 @@ instance Show NoteCmd where
 
 data Shared = AShared
     { sharedEnvFreq :: EnvFreq
-    , sharedEnvForm :: EnvForm
+    , sharedEnvForm :: Maybe EnvForm
     , sharedMask :: ChannelMask
     , sharedNoise :: Noise } deriving (Eq)
 
 newShared :: Shared
-newShared = AShared noEnvFreq noEnvForm noChannelMask noNoise
+newShared = AShared noEnvFreq Nothing noChannelMask noNoise
 
 instance Show Shared where
     showsPrec _ s = ('{':) . shows (sharedEnvForm s). showsHex 4 (sharedEnvFreq s) .(' ':)
@@ -250,11 +250,11 @@ data Note = ANote
     , noteSample :: Maybe Int
     , noteOrnament :: Maybe Int
     , noteVolume :: Maybe Int
-    , noteEnvForm :: EnvForm
+    , noteEnvForm :: Maybe EnvForm
     , noteEnvFreq :: EnvFreq
     , noteNoise :: Noise } deriving (Eq)
 
-newNote = ANote NoteCmdNone NoNote Nothing Nothing Nothing EnvFormNone noEnvFreq noNoise
+newNote = ANote NoteCmdNone NoNote Nothing Nothing Nothing Nothing noEnvFreq noNoise
 
 instance Show Note where
     showsPrec _ n = ('{':) . shows (notePitch n) . (' ':)
@@ -314,6 +314,10 @@ data Instrument d = AnInstrument
 newInstrument :: Instrument d
 newInstrument = AnInstrument 0 [] 0 0
 
+isEmptyInstrument :: Instrument d -> Bool
+isEmptyInstrument (AnInstrument _ [] 0 0) = True
+isEmptyInstrument _ = False
+
 ---------------
 
 type Sample = Instrument SampleData
@@ -331,17 +335,17 @@ data SampleData = ASampleData
     { sampleDataNoise :: Int
     , sampleDataTone :: Int
     , sampleDataVolume :: Int
-    , sampleDataNoiseMask :: Bool
-    , sampleDataToneMask :: Bool
-    , sampleDataEnvMask :: Bool
+    , sampleDataNoiseEnable :: Bool
+    , sampleDataToneEnable :: Bool
+    , sampleDataEnvEnable :: Bool
     , sampleDataEffect :: SampleDataEffect } deriving (Eq)
 
 newSampleData = ASampleData 0 0 0 False False False SDENone
 
 instance Show SampleData where
     showsPrec _ d = ('(':) . shows (sampleDataEffect d) . shows2 (sampleDataVolume d)
-                   .((if sampleDataNoiseMask d then " N=" else " n=") ++) . shows2 (sampleDataNoise d)
-                   .((if sampleDataToneMask d then " T=" else " t=") ++) . showsSgnInt 5 (sampleDataTone d) . (')':)
+                   .((if sampleDataNoiseEnable d then " N=" else " n=") ++) . shows2 (sampleDataNoise d)
+                   .((if sampleDataToneEnable d then " T=" else " t=") ++) . showsSgnInt 5 (sampleDataTone d) . (')':)
     showList ds = ('[':) . (intercalate ", " ([shows i . ('-':) $ show d | (i,d) <- zip [0..] ds ]) ++) . (']':)
 
 data SampleDataEffect = SDENone | SDEEnv | SDEDown | SDEUp  deriving (Eq)

@@ -1,6 +1,7 @@
 module MOD_Dump.Utils where
 
 import Data.Binary.Get
+import Data.Binary.Put
 import Control.Monad
 import Control.Monad.Trans
 import Data.List(intercalate)
@@ -34,6 +35,12 @@ showsSgnInt len n
     | n >= 0 = ('+':) . showsZ (len-1) n
     | otherwise = ('-':) . showsZ (len-1) (0-n)
 
+showsSgnHex :: Int -> Int -> ShowS
+showsSgnHex len n
+    | n >= 0 = ('+':) . showsHex (len-1) n
+    | otherwise = ('-':) . showsHex (len-1) (0-n)
+
+
 
 padLeft :: Char -> Int -> String -> String
 padLeft c n s = let l = length s in if l>=n then s else take (n-l) (repeat c) ++ s
@@ -64,6 +71,24 @@ isInRanges [] _ = True
 isInRanges r x = any (\(f,t) -> x>=f && x<=t) r
 
 ---------------
+getAsInt8 :: Integral a => Get a
+getAsInt8 = fromIntegral <$> getInt8
+
+putAsInt8 :: Integral a => a -> Put
+putAsInt8 = putWord8 . fromIntegral
+
+getAsWord8 :: Integral a => Get a
+getAsWord8 = fromIntegral <$> getWord8
+
+putAsWord8 :: Integral a => a -> Put
+putAsWord8 = putWord8 . fromIntegral
+
+getAsWord16le :: Integral a => Get a
+getAsWord16le = fromIntegral <$> getWord16le
+
+putAsWord16le :: Integral a => a -> Put
+putAsWord16le = putWord16le . fromIntegral
+
 peekWord16 :: Int -> Get Int
 peekWord16 n = lookAhead $ skip n >> fromIntegral `liftM` getWord16le
 
