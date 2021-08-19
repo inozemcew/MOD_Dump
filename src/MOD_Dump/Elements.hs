@@ -4,7 +4,7 @@
 module MOD_Dump.Elements
     ( Instrument, instrumentNumber, instrumentData, instrumentLoopStart, instrumentLoopEnd, newInstrument, isEmptyInstrument
     , Sample, sampleNumber, sampleData, sampleLoopStart, sampleLoopEnd, newSample
-    , SampleData, sampleDataVolume, sampleDataToneEnable, sampleDataNoiseEnable, sampleDataEnvEnable, sampleDataTone, sampleDataNoise, sampleDataEffect, newSampleData
+    , SampleData, sampleDataVolume, sampleDataToneEnable, sampleDataNoiseEnable, sampleDataToneHold, sampleDataNoiseHold, sampleDataEnvEnable, sampleDataTone, sampleDataNoise, sampleDataEffect, newSampleData
     , SampleDataEffect(SDENone, SDEEnv, SDEDown, SDEUp)
     , Ornament, ornamentNumber, ornamentData, ornamentLoopStart, ornamentLoopEnd, newOrnament
     , OrnamentData, ornamentDataTone, ornamentDataNoise, newOrnamentData
@@ -20,7 +20,7 @@ module MOD_Dump.Elements
     , Row, rowNumber, rowShared, rowNotes, makeRows, makeRowsWithShared, channelsFromRows
     , Pattern, patternNumber, patternRows, newPattern
     , Tables, positionsTable, patternsTable, samplesTable, ornamentsTable, newTables
-    , ModuleData, delay, loopingPos, positions, patterns, samples, ornaments, title, author, size, mtype, newModuleData
+    , ModuleData(..), newModuleData
     ) where
 
 import Data.List(transpose, intercalate, groupBy)
@@ -36,7 +36,9 @@ data ModuleData = AModuleData
     , title :: String
     , author :: String
     , size :: Int
-    , mtype:: String } deriving (Eq)
+    , mtype:: String
+    , freqTType:: Maybe FreqTableType
+    , songEnd :: Int } deriving (Eq)
 
 instance Show ModuleData where
     showsPrec _ m = showString "({" . ("delay = " ++) . shows (delay m)
@@ -52,7 +54,7 @@ instance Show ModuleData where
         . shows (positions m) . showString ")"
 
 newModuleData :: ModuleData
-newModuleData = AModuleData 0 0 [] [] [] [] "" "" 0 ""
+newModuleData = AModuleData 0 0 [] [] [] [] "" "" 0 "" Nothing 0
 
 data Tables = ATables
     { positionsTable :: Int
@@ -75,6 +77,9 @@ instance Show Position where
 
 newPosition :: Position
 newPosition = APosition 0 0
+
+data FreqTableType = FreqTTypePT | FreqTTypeST | FreqTTypeASM | FreqTTypeRS deriving (Eq, Show, Ord, Enum)
+
 
 -------------------------------
 data Key = KeyC | KeyCS | KeyD  | KeyDS | KeyE | KeyF | KeyFS | KeyG  | KeyGS | KeyA | KeyAS | KeyB deriving (Eq, Show, Ord, Enum)
@@ -197,10 +202,10 @@ data NoteCmd = NoteCmdNone
              | NoteCmdHldImage
              | NoteCmdHldInstr
              | NoteCmdDelay Int
-             | NoteCmdGlisUp Int
-             | NoteCmdGlisDn Int
+             | NoteCmdGlisUp Int Int
+             | NoteCmdGlisDn Int Int
              | NoteCmdGlis Int
-             | NoteCmdPorta Int
+             | NoteCmdPorta Int Int Int
              | NoteCmdPortaR Int
              | NoteCmdNoise Int
              | NoteCmdSampleOffset Int
@@ -216,10 +221,10 @@ instance Show NoteCmd where
                   NoteCmdHldImage -> showString "HImg"
                   NoteCmdHldInstr -> showString "HIns"
                   NoteCmdDelay d -> showString "D=" . shows2 d
-                  NoteCmdGlisUp g -> showString "G+" .shows2 g
-                  NoteCmdGlisDn g -> showString "G-" .shows2 g
+                  NoteCmdGlisUp _ g -> showString "G+" .shows2 g
+                  NoteCmdGlisDn _ g -> showString "G-" .shows2 g
                   NoteCmdGlis g -> showString "G=" .shows2 g
-                  NoteCmdPorta p -> showString "P=" .shows2 p
+                  NoteCmdPorta _ _ p -> showString "P=" .shows2 p
                   NoteCmdPortaR p -> showString "R=" .shows2 p
                   NoteCmdNoise n -> showString "N=" .shows2 n
                   NoteCmdSampleOffset o -> showString "S=" .shows2 o
@@ -336,11 +341,13 @@ data SampleData = ASampleData
     , sampleDataTone :: Int
     , sampleDataVolume :: Int
     , sampleDataNoiseEnable :: Bool
+    , sampleDataNoiseHold :: Bool
     , sampleDataToneEnable :: Bool
+    , sampleDataToneHold :: Bool
     , sampleDataEnvEnable :: Bool
     , sampleDataEffect :: SampleDataEffect } deriving (Eq)
 
-newSampleData = ASampleData 0 0 0 False False False SDENone
+newSampleData = ASampleData 0 0 0 False False False False False SDENone
 
 instance Show SampleData where
     showsPrec _ d = ('(':) . shows (sampleDataEffect d) . shows2 (sampleDataVolume d)

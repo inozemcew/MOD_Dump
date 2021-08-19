@@ -10,6 +10,7 @@ import Data.Bits
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
+import Data.List(mapAccumR)
 
 pt2Module :: Module
 pt2Module = newModule
@@ -29,9 +30,9 @@ getModuleData = do
     x <- getWord16le
     guard (x == 0)
     samples' <- getSamples
-    oorn0 <- getWord16le
+    oorn0 <- getAsWord16le
     orn0 <- lookAhead $ do
-        skipTo $ fromIntegral oorn0
+        skipTo oorn0
         liftM2 (,) getWord16le getWord8
     guard (orn0 == (1,0))
     ornaments' <- getOrnaments
@@ -62,7 +63,7 @@ putModuleData md = do
     putAsWord8 $ length $ positions md
     putAsWord8 $ loopingPos md
     putWord16le 0
-    oo <- foldM foldOffs chStart samplesLengths  -- -!!!!!!!!!!!!!!!!!!!!
+    oo <- foldM foldOffs chStart samplesLengths
     putAsWord16le oo
     foldM_ foldOffs (oo+3) $ ornamentsLengths
     putAsWord16le patOffset
@@ -168,8 +169,11 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
             when (noteOrnament oN /= noteOrnament nN) $ doModifyM 0x60 $ noteOrnament nN
             when (noteVolume oN /= noteVolume nN) $ doModifyM 0x10 $ noteVolume nN
             when (noteCmd nN /= NoteCmdNone) $ case noteCmd nN of
-                    NoteCmdDelay n -> doModify2 0x0e n
+                    NoteCmdDelay n -> doModify2 0x0f n
                     NoteCmdGlis n  -> doModify2 0x0e n
+                    NoteCmdPorta _ f g -> do
+                        doModify2 0xd0 g
+                        doModify 2 $ putAsInt16le f
                     NoteCmdNoise n -> doModify2 0x0b n
                     _ -> return ()
             doModify1 $ putPitch $ notePitch nN
@@ -204,8 +208,8 @@ getNotes note = do
                 | x >= 0x80 = yieldNotes $ note { notePitch = toEnum $ x - 0x80 + fromEnum pitchC1 }
                 | x == 0x7f = getNotes $ note { noteEnvForm = noEnvForm }
                 | x >= 0x71 = do
-                    freq <- lift getWord16le
-                    getNotes $ note { noteEnvForm = Just $ toEnum (x - 0x70), noteEnvFreq = fromIntegral freq }
+                    freq <- lift getAsWord16le
+                    getNotes $ note { noteEnvForm = Just $ toEnum (x - 0x70), noteEnvFreq = freq }
                 | x == 0x70 = yieldNotes note
                 | x >= 0x60 = getNotes $ note { noteOrnament = Just (x - 0x60) }
                 | x >= 0x20 = put (x - 0x20) >> getNotes note
@@ -218,8 +222,8 @@ getNotes note = do
                     getNotes note { noteCmd = NoteCmdGlis g }
                 | x == 0x0d = do
                     g <- lift getAsWord8
-                    f <- lift getInt16le
-                    getNotes $ note { noteCmd = NoteCmdPorta g }
+                    f <- lift getAsInt16le
+                    getNotes $ note { noteCmd = NoteCmdPorta 0 f g }
                 | x == 0x0c = getNotes $ note { noteCmd = NoteCmdNone }
                 | x == 0x0b = do
                     g <- lift getAsWord8
@@ -250,25 +254,31 @@ getInstruments n = forM [1..n-1] $ \i -> do
                 , instrumentLoopStart = loopStart }
 
 putInstruments :: (InstrumentData d) => Int -> [Instrument d] -> (Put, [Int])
-putInstruments ns ins = let (p,l) = unzip $ evalState (mapM putInstrument [1..ns-1]) ins in (sequence_ p, l)
+putInstruments n ins = mapAccumR doPutInstrument mempty expandInstruments
     where
-        putInstrument n = do
+        expandInstruments = evalState (mapM doExpand [1..n-1]) ins
+        doExpand c = do
             i <- get
             let (h:t) = i
-            let (doPutInstrumentData, instrumentDataLength) = putInstrumentData $ instrumentData h
-            let doPutInstrument = do
-                    putAsWord8 $ length $ instrumentData h
-                    putAsWord8 $ instrumentLoopStart h
-                    doPutInstrumentData
-            if null i || n < instrumentNumber h
-               then return (mempty, 0)
+            if null i || c < instrumentNumber h
+               then return Nothing
                else do
                    put t
-                   return (doPutInstrument, 2 + instrumentDataLength)
+                   return $ Just h
+        doPutInstrument ap Nothing = (ap,0)
+        doPutInstrument ap (Just i) = (putInstrument i >> ap, 2 + sizeInstrumentData (instrumentData i))
+
+putInstrument :: (InstrumentData d) => Instrument d -> Put
+putInstrument h = do
+                    let ids = instrumentData h
+                    putAsWord8 $ length ids
+                    putAsWord8 $ instrumentLoopStart h
+                    putInstrumentData ids
 
 class InstrumentData d where
     getInstrumentData :: Get d
-    putInstrumentData :: [d] -> (Put, Int)
+    putInstrumentData :: [d] -> Put
+    sizeInstrumentData :: [d] -> Int
     showInstrumentData :: [d] -> [String]
 
 getSamples :: Get [Sample]
@@ -280,6 +290,7 @@ putSamples = putInstruments 32
 instance InstrumentData SampleData where
     getInstrumentData = getSampleData
     putInstrumentData = putSampleData
+    sizeInstrumentData = sizeSampleData
     showInstrumentData = showSampleData
 
 getSampleData :: Get SampleData
@@ -301,8 +312,8 @@ getSampleData = do
                 , sampleDataNoise = noise
                 , sampleDataVolume = volume }
 
-putSampleData :: [SampleData] -> (Put,Int)
-putSampleData sds = (mapM_ doPutSampleData sds, 3 * length sds)
+putSampleData :: [SampleData] -> Put
+putSampleData sds = mapM_ doPutSampleData sds
     where
         doPutSampleData sd= do
             putWord8
@@ -313,6 +324,9 @@ putSampleData sds = (mapM_ doPutSampleData sds, 3 * length sds)
             let sdt = if sampleDataTone sd >= 0 then sampleDataTone sd else negate $ sampleDataTone sd
             putAsWord8 $ (sampleDataVolume sd `shiftL` 4) .|. ((sdt `shiftR` 8) .&. 0x0f)
             putAsWord8 $ sdt .&. 0xff
+
+sizeSampleData :: [SampleData] -> Int
+sizeSampleData sds =  3 * length sds
 
 showPT2Sample :: Sample -> [String]
 showPT2Sample s = [ padSRight (width32 + 2) $ "Sample: " ++ show (sampleNumber s)
@@ -350,6 +364,7 @@ putOrnaments = putInstruments 16
 instance InstrumentData OrnamentData where
     getInstrumentData = getOrnamentData
     putInstrumentData = putOrnamentData
+    sizeInstrumentData = length
     showInstrumentData = showOrnamentData
 
 getOrnamentData :: Get OrnamentData
@@ -357,8 +372,8 @@ getOrnamentData = do
     t <- getAsInt8
     return newOrnamentData{ ornamentDataTone = t }
 
-putOrnamentData :: [OrnamentData] -> (Put, Int)
-putOrnamentData od = (mapM_ (putAsInt8 . ornamentDataTone) od, length od)
+putOrnamentData :: [OrnamentData] -> Put
+putOrnamentData od = mapM_ (putAsInt8 . ornamentDataTone) od
 
 showPT2Ornament :: Ornament -> [String]
 showPT2Ornament orn = let o = concat $ showOrnamentData $ ornamentData orn

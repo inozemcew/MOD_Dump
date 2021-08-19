@@ -13,7 +13,7 @@ import MOD_Dump.Module
 import qualified MOD_Dump.STC as STC
 import qualified MOD_Dump.ASC as ASC
 import qualified MOD_Dump.PT2 as PT2
-
+import qualified MOD_Dump.PT3 as PT3
 
 testElements = TestLabel "Elements" $ test
     [ TestCase(assertEqual "Low note" "<C--1>" (show (minBound::Pitch)))
@@ -35,10 +35,17 @@ testShowsSgnInt = TestCase $ forM_ [-10..10] $
                                                      length s == 3 && if i<0
                                                                          then head s == '-'
                                                                          else head s == '+')
+testPadSRight = TestCase $ assertEqual "padSRight" (padSRight 5 "1") "1    "
+testPadSLeft = TestCase $ assertEqual "padSLeft" (padSLeft 5 "1") "    1"
+testTrimR = TestCase $ assertEqual "trimR" (trimR "1 2    ") "1 2"
+
 testUtils = test
             [ testShowsP
             , testShowsHex
             , testShowsSgnInt
+            , testPadSLeft
+            , testPadSRight
+            , testTrimR
             ]
 
 --------------------
@@ -97,7 +104,7 @@ pt2OrnamentDataNotes = [ newOrnamentData { ornamentDataTone = x} | x <- [0..127]
 testInstrumentData notes bytes = TestCase $ mapM_ doTest $ zip notes bytes
     where
         doTest (n,b) = do
-            let a = runPut $ fst $ PT2.putInstrumentData [n]
+            let a = runPut $ PT2.putInstrumentData [n]
             let m = runGet PT2.getInstrumentData b
             when (a /= b) $ assertFailure $ unlines $ "Wrong put" : hexDiff a b : PT2.showInstrumentData [n]
             when (m /= n) $ assertFailure $ unlines $ "Wrong get" : hexDiff a b : PT2.showInstrumentData [n,m]
@@ -106,6 +113,13 @@ testPT2Module = testModule PT2.pt2Module
 
 ---------------------
 
+pt3FNames = ["0718.3.3.pt3", "4_liznad.3.6.pt3"]
+
+testPT3 = test $ map testPT3Module pt3FNames
+
+testPT3Module = testModule PT3.pt3Module
+
+---------------------
 testModule tm fName = TestCase $ do
     f <- B.readFile $ "mods/" ++ fName
     Just (m, md) <- readModule [tm] $ "mods/" ++ fName
@@ -128,4 +142,4 @@ hexDiff a b = hexDiff' 0 a b ++ "\nErrors count: " ++ (show $ length $ filter (\
 
 main :: IO ()
 main = do
-    runTestTTAndExit ( TestList [testElements, testUtils, testSTC, testASC, testPT2] )
+    runTestTTAndExit ( TestList [testElements, testUtils, testSTC, testASC, testPT2, testPT3] )

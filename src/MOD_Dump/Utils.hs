@@ -89,6 +89,18 @@ getAsWord16le = fromIntegral <$> getWord16le
 putAsWord16le :: Integral a => a -> Put
 putAsWord16le = putWord16le . fromIntegral
 
+getAsWord16be :: Integral a => Get a
+getAsWord16be = fromIntegral <$> getWord16be
+
+putAsWord16be :: Integral a => a -> Put
+putAsWord16be = putWord16be . fromIntegral
+
+getAsInt16le :: Integral a => Get a
+getAsInt16le = fromIntegral <$> getInt16le
+
+putAsInt16le :: Integral a => a -> Put
+putAsInt16le = putInt16le . fromIntegral
+
 peekWord16 :: Int -> Get Int
 peekWord16 n = lookAhead $ skip n >> fromIntegral `liftM` getWord16le
 

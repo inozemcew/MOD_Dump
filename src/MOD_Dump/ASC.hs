@@ -359,17 +359,17 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             | x == 0xf2 = getNotes $ n{ noteCmd = NoteCmdHldImage }               -- Hold image command
             | x == 0xf3 = getNotes $ n{ noteCmd = NoteCmdHldInstr }               -- Hold sample and image
             | x == 0xf4 = setCmd NoteCmdDelay                                     -- Set delay command
-            | x == 0xf5 = setCmd NoteCmdGlisUp                                    -- GlisUp command
-            | x == 0xf6 = setCmd NoteCmdGlisDn                                    -- GlisDn command
+            | x == 0xf5 = setCmd $ NoteCmdGlisUp 0                                -- GlisUp command
+            | x == 0xf6 = setCmd $ NoteCmdGlisDn 0                                -- GlisDn command
             | x == 0xf7 = setCmd NoteCmdPortaR                                    -- Port.S+ command
-            | x == 0xf8 = getNotes $ n{ noteEnvForm = Just EnvFormRepDecay }           -- Set envelope form 8 '\'
-            | x == 0xf9 = setCmd NoteCmdPorta                                     -- Port.S- command
-            | x == 0xfa = getNotes $ n{ noteEnvForm = Just EnvFormRepDecayAttack }     -- Set envelope form 10 'V'
+            | x == 0xf8 = getNotes $ n{ noteEnvForm = Just EnvFormRepDecay }      -- Set envelope form 8 '\'
+            | x == 0xf9 = setCmd $ NoteCmdPorta 0 0                               -- Port.S- command
+            | x == 0xfa = getNotes $ n{ noteEnvForm = Just EnvFormRepDecayAttack }-- Set envelope form 10 'V'
             | x == 0xfb = do                                                      -- Volume slide
                 d <- lift getWord8
                 getNotes $ n{ noteCmd = NoteCmdVolSlide $ intExpand 32 d}
-            | x == 0xfc = getNotes $ n{ noteEnvForm = Just EnvFormRepAttack }          -- Set envelope form 12 '/'
-            | x == 0xfe = getNotes $ n{ noteEnvForm = Just EnvFormRepAttackDecay }     -- Set envelope form 14 '^'
+            | x == 0xfc = getNotes $ n{ noteEnvForm = Just EnvFormRepAttack }     -- Set envelope form 12 '/'
+            | x == 0xfe = getNotes $ n{ noteEnvForm = Just EnvFormRepAttackDecay }-- Set envelope form 14 '^'
             | otherwise = getNotes n
             where
                 setCmd c = do
@@ -411,15 +411,15 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
         putPitch n = fromEnum n - fromEnum pitchAS0
 
         putNoteCmd nN = case noteCmd nN of
-                             NoteCmdHldSample  -> doModify1 0xf1
-                             NoteCmdHldImage   -> doModify1 0xf2
-                             NoteCmdHldInstr   -> doModify1 0xf3
-                             NoteCmdDelay    n -> doModifyC 0xf4 n
-                             NoteCmdGlisUp   n -> doModifyC 0xf5 n
-                             NoteCmdGlisDn   n -> doModifyC 0xf6 n
-                             NoteCmdPortaR   n -> doModifyC 0xf7 n
-                             NoteCmdPorta    n -> doModifyC 0xf9 n
-                             NoteCmdVolSlide n -> doModifyC 0xfb $ intShrink 32 n
+                             NoteCmdHldSample   -> doModify1 0xf1
+                             NoteCmdHldImage    -> doModify1 0xf2
+                             NoteCmdHldInstr    -> doModify1 0xf3
+                             NoteCmdDelay     n -> doModifyC 0xf4 n
+                             NoteCmdGlisUp _  n -> doModifyC 0xf5 n
+                             NoteCmdGlisDn _  n -> doModifyC 0xf6 n
+                             NoteCmdPortaR    n -> doModifyC 0xf7 n
+                             NoteCmdPorta _ _ n -> doModifyC 0xf9 n
+                             NoteCmdVolSlide  n -> doModifyC 0xfb $ intShrink 32 n
                              _ -> return ()
 
         doModify c f = modify $ \(p, l) -> (p >> f, l + c)
