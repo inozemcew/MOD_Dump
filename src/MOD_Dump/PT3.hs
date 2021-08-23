@@ -10,7 +10,8 @@ import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
 import Data.Bits
-import Data.List(mapAccumR)
+import Data.List(mapAccumR, mapAccumL, dropWhileEnd)
+import Data.Char(isDigit)
 
 
 pt3Module :: Module
@@ -26,7 +27,7 @@ pt3Module = newModule
 getPT3ModuleData :: Get ModuleData
 getPT3ModuleData = do
     tt <- B.unpack <$> getLazyByteString 63
-    let (mtype', title') = splitTypeTitle tt
+    let (mtype', title') = (dropWhileEnd (not.isDigit) $ take 30 tt, drop 30 tt)
     replicateM 3 getWord8
     author' <- B.unpack <$> getLazyByteString 33
     toneTableType <- getAsWord8
@@ -51,8 +52,8 @@ getPT3ModuleData = do
         , loopingPos = loopingPos'
         , positions = [ newPosition { positionNumber = i} | i <- positions'' ]
         , patterns = patterns'
-        , samples = filter (\s -> not.null $ sampleData s) samples'
-        , ornaments = filter (\o -> ornamentNumber o > 0 && (not.null $ ornamentData o)) ornaments'
+        , samples = [ s | s <- samples', not.null $ sampleData s]
+        , ornaments = [o | o <- ornaments', ornamentNumber o > 0 && (not.null $ ornamentData o)]
         , freqTType = Just $ toEnum toneTableType
         }
 
@@ -67,10 +68,10 @@ putPT3ModuleData md = do
     putAsWord8 $ loopingPos md
     putAsWord16le patOffset
     putWord16le 0  -- 0th sample placeholder - allways 0
-    oo <- foldM foldOffs chStart samplesLengths
+    oo <- foldM foldOffs chStart smpLengths
     putAsWord16le oo -- 0th ornament, allways the same empty ornament
-    foldM_ foldOffs (oo+3) ornamentsLengths
-    forM_ (positions md) $ putAsWord8 .(*3). positionNumber               -- put positions muliplied by 3
+    foldM_ foldOffs (oo+3) ornLengths
+    forM_ (positions md) $ \p -> putAsWord8 $ 3 * positionNumber p        -- put positions muliplied by 3
     putWord8 255                                                          -- end of positions table
     forM_ chsOffs putAsWord16le
     doPutPatterns
@@ -78,56 +79,46 @@ putPT3ModuleData md = do
     mapM_ putWord8 [00,01,00]
     doPutOrnaments
         where
-            (doPutSamples, samplesLengths) = putSamples $ samples md
-            (doPutOrnaments, ornamentsLengths) = putOrnaments $ ornaments md
+            (doPutPatterns, chsLengths) = putPatterns $ patterns md
+            (doPutSamples, smpLengths) = putSamples $ samples md
+            (doPutOrnaments, ornLengths) = putOrnaments $ ornaments md
             patOffset = 202 + length (positions md)
-            (doPutPatterns, channelsLengths) = putPatterns $ patterns md
-            (chsOffs, chStart) = runState calcOffsets $ 2 * length channelsLengths +  patOffset
+            (chStart, chsOffs) = mapAccumL calcOffsets (2 * length chsLengths + patOffset) chsLengths
 
             foldOffs s o = do
-                if o==0 then putWord16le 0 else putAsWord16le $ s
+                if o==0 then putWord16le 0 else putAsWord16le s
                 return $ s + o
 
-            calcOffsets = forM channelsLengths $ \l -> case l of
-                                                            Left x  -> return $ chsOffs !! (x-1)
-                                                            Right x -> state (\s -> (s, x + s))
-splitTypeTitle:: String -> (String, String)
-splitTypeTitle s = (foldr takeToLastDigit "" $ take 30 s, drop 30 s)
-    where
-        takeToLastDigit x a = if null a then if x `elem` ['0'..'9'] then x:a else a else x:a
-        lastDigitPos = fst $ foldl (\(a,b) x -> if x `elem` ['0'..'9'] then (b+1,b+1)
-                                                                       else (a,b+1)
-                                   ) (0,0) $ take 30 s
+            calcOffsets s x = either (\l -> (s, chsOffs !! (l - 1))) (\r -> (s + r, s)) x
 
 
 ---------------------------
 
-getPatterns::Int -> Get [Pattern]
+getPatterns :: Int -> Get [Pattern]
 getPatterns n = forM [0..n] $ \i -> do
     here <- bytesRead
-    chs <- replicateM 3 $ do
+    offs <- replicateM 3 $ do
         ch <- getAsWord16le
         guard (ch > fromIntegral here)
         return ch
-    channels <- mapM (lookAhead . getChannel) chs
+    channels <- mapM (lookAhead . getChannel) offs
     return newPattern
         { patternNumber = i
         , patternRows = makeRowsWithShared makeShared channels }
 
 putPatterns :: [Pattern] -> (Put,[Either Int Int])
-putPatterns pts = foldr foldChannel mempty nchs
+putPatterns pts = mapAccumR foldChannel mempty enumeratedChs
     where
-        chs = [ ch | pt <- pts, ch <- channelsFromRows $ patternRows pt ]
-        nchs = zip [1..] chs
-        findSame (n,ch) = fst $ head $ dropWhile (\(i,c) -> c /= ch && i < n) nchs
-        foldChannel (n, ch) (ap, al) = let (p, l) = putChannel ch
-                                           f = findSame (n, ch)
-                                       in  if f == n then (p >> ap, Right l : al)
-                                                     else (ap, Left f : al)
+        enumeratedChs = zip [1..] [ ch | pt <- pts, ch <- channelsFromRows $ patternRows pt ]
+        findSame (n,ch) = fst $ head $ dropWhile (\(i,c) -> c /= ch && i < n) enumeratedChs
+        foldChannel ap (n, ch) = let (p, l) = putChannel ch
+                                     f = findSame (n, ch)
+                                 in  if f == n then (p >> ap, Right l)
+                                               else (ap, Left f)
 
 makeShared :: [Note] -> Shared
 makeShared notes = let newE a x = if noteEnvFreq x == noEnvFreq then a else noteEnvFreq x
-                       newN a x = if noteNoise x == noNoise then a else noteEnvFreq x
+                       newN a x = if noteNoise x == noNoise then a else noteNoise x
                        (ef,nf) = foldl (\(oe,on) n -> (newE oe n, newN on n)) (noEnvFreq,noNoise) notes
                    in
                        newShared { sharedEnvFreq = ef, sharedNoise = nf }
@@ -146,23 +137,24 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
             let nNS = noteSample nN
             let oNO = noteOrnament oN
             let nNO = noteOrnament nN
+            let e = noteEnvForm nN
 
-            case (noteSample nN, noteOrnament nN, noteEnvForm nN) of
-                 (Just s, Just o, e) -> do
+            case (noteSample nN, noteOrnament nN, noteEnvEnable nN) of
+                 (Just s, Just o, Just ee) -> do
                      doModify1 $ 0xf0 + o
                      doModify1 $ 2 * s
-                     when (e /= Nothing) $ do
-                         doModifyM 0xb0 $ fromEnum <$> e
+                     when (ee) $ do
+                         doModify1 $ 0xb0 + fromEnum e
                          doModify 2 $ putAsWord16be $ noteEnvFreq nN
 
-                 (Nothing, Nothing, Just EnvFormNone) -> doModify1 $ 0xb0
-                 (Just s, Nothing, Just EnvFormNone) -> do
+                 (Nothing, Nothing, Just False) -> doModify1 $ 0xb0
+                 (Just s, Nothing, Just False) -> do
                      doModify1 0x10
                      doModify1 $ s * 2
-                 (Nothing, Nothing, Just e) -> do
+                 (Nothing, Nothing, Just True) -> do
                      doModify1 $ 0xb0 + fromEnum e
                      doModify 2 $ putAsWord16be $ noteEnvFreq nN
-                 (Just s, Nothing, Just e) -> do
+                 (Just s, Nothing, Just True) -> do
                      doModify1 $ 0x10 + fromEnum e
                      doModify 2 $ putAsWord16be $ noteEnvFreq nN
                      doModify1 $ s * 2
@@ -215,36 +207,38 @@ getNotes note = do
                                 s <- lift getAsWord8
                                 getNotes $ note { noteOrnament = Just (x - 0xf0)
                                                 , noteSample = Just (s `div` 2)
-                                                , noteEnvForm = Nothing }
+                                                , noteEnvEnable = Just False }
                 | x >= 0xd1 = getNotes $ note { noteSample = Just (x - 0xd0) }
                 | x == 0xd0 = yieldNotes note
                 | x >= 0xc1 = getNotes $ note { noteVolume = Just (x - 0xc0) }
                 | x == 0xc0 = yieldNotes $ note { notePitch = Pause }
                 | x >= 0xb2 = do
                                 freq <- lift getAsWord16be -- reverse byte order here
-                                getNotes $ note { noteEnvForm = Just $ toEnum (x - 0xb0)
+                                getNotes $ note { noteEnvForm = toEnum (x - 0xb0)
                                                 , noteEnvFreq = freq
+                                                , noteEnvEnable = Just True
                                                 }
                 | x == 0xb1 = do
                                 s <- lift getAsWord8
                                 modify $ \(_, fx) -> (s - 1, fx)
                                 getNotes note
-                | x == 0xb0 = getNotes $ note { noteEnvForm = noEnvForm }
+                | x == 0xb0 = getNotes $ note { noteEnvEnable = Just False }
                 | x >= 0x50 = yieldNotes $ note { notePitch = toEnum $ x - 0x50 + fromEnum pitchC1 }
                 | x >= 0x40 = getNotes $ note { noteOrnament = Just (x - 0x40) }
-                | x >= 0x20 = getNotes $ note { noteNoise = x - 0x20 }
+                | x >= 0x20 = getNotes $ note { noteNoise = toNoise $ x - 0x20 }
                 | x >= 0x11 = do
                                 e <- lift getAsWord16be
                                 s <- lift getAsWord8
                                 getNotes note
-                                    { noteEnvForm = Just $ toEnum (x - 0x10)
+                                    { noteEnvForm = toEnum (x - 0x10)
                                     , noteEnvFreq = e
+                                    , noteEnvEnable = Just True
                                     , noteSample = Just (s `div` 2)
                                     }
                 | x == 0x10 = do
                                 s <- lift getAsWord8
                                 getNotes note
-                                    { noteEnvForm = Just EnvFormNone
+                                    { noteEnvEnable = Just False
                                     , noteSample = Just (s `div` 2)
                                     }
                 | x <= 0x09 = do
@@ -319,9 +313,9 @@ showsNote n = showsPitch (notePitch n) .(' ':)
         showsCmd (NoteCmdDelay x) = showString "B0" . showsHex 2 x
         showsCmd _ = showString "0000"
 
-        showsEForm = if noteEnvForm n `elem` [Nothing, noEnvForm]
+        showsEForm = if noteEnvForm n == noEnvForm
                         then maybe ('0':) (const ('F':)) $  noteOrnament n
-                        else let (Just ef) =  noteEnvForm n in showsHex 1 $ fromEnum ef
+                        else showsHex 1 $ fromEnum $ noteEnvForm n
 
 
 ---------------------------------
@@ -344,16 +338,11 @@ getInstruments n = forM [0..n-1] $ \i -> do
 putInstruments :: (InstrumentData d) => Int -> [Instrument d] -> (Put, [Int])
 putInstruments n ins = mapAccumR doPutInstrument mempty expandInstruments
     where
-        expandInstruments = evalState (mapM doExpand [1..n-1]) ins
-        doExpand c = do
-            i <- get
-            let (h:t) = i
-            if null i || c < instrumentNumber h
-               then return Nothing
-               else do
-                   put t
-                   return $ Just h
-        doPutInstrument ap Nothing = (ap,0)
+        expandInstruments = snd $ mapAccumL doExpand ins [1..n-1]
+        doExpand i c = let (h:t) = i in if null i || c < instrumentNumber h
+                           then (i, Nothing)
+                           else (t,  Just h)
+        doPutInstrument ap Nothing = (ap, 0)
         doPutInstrument ap (Just i) = (putInstrument i >> ap, 2 + sizeInstrumentData (instrumentData i))
 
 putInstrument :: (InstrumentData d) => Instrument d -> Put
@@ -395,10 +384,10 @@ getSampleData = do
         , sampleDataNoiseHold   = testBit b2 5
         , sampleDataToneEnable  = not $ testBit b2 4
         , sampleDataEnvEnable   = not $ testBit b1 0
-        , sampleDataEffect = case (testBit b1 7, testBit b1 6) of
-                                    (True, False) -> SDEDown
-                                    (True, True) -> SDEUp
-                                    _ -> SDENone
+        , sampleDataEffect      = case (testBit b1 7, testBit b1 6) of
+                                       (True, False) -> SDEDown
+                                       (True, True) -> SDEUp
+                                       _ -> SDENone
         }
 
 putSampleData :: SampleData -> Put
@@ -417,7 +406,7 @@ putSampleData sd = do
     putAsInt16le $ sampleDataTone sd
 
 showPT3Sample::Sample -> [String]
-showPT3Sample s = let width53 = 38 in
+showPT3Sample s = let width53 = 37 in
                       [ padSRight width53 $ "Sample " ++ showsHex 2 (sampleNumber s) "", replicate width53 '-' ]
                       ++ showSampleData (sampleLoopStart s) (sampleData s)
                       ++ [ replicate width53 '-' ]
@@ -448,7 +437,7 @@ showSampleData l sds = [ shows2 i
             : showMask 'E' (sampleDataEnvEnable s )
             : x
         showMask c m = if m then c else '-'
-        showsVol v = showString (concat $ replicate v "#") . showString (concat $ replicate (16 - v) ".") . (' ':) .showsHex 1 v
+        showsVol v = showString (replicate v '#' ++ replicate (15 - v) '.') . (' ':) .showsHex 1 v
 
 -------------------------------
 getOrnaments :: Get [Ornament]

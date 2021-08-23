@@ -233,30 +233,27 @@ showASCHeader m = [ "Song type: " ++ show (mtype m)
 
 showPosition pn = '{' : shows (positionNumber pn) "}"
 
+putOffsets :: Int -> [Int] -> Put
+putOffsets s xs = foldM_ (\a x -> putAsWord16le a >> return (a + x)) s xs
+
 ------------------
 getPatterns:: Int -> Int -> Get [Pattern]
 getPatterns offset count = do
     skip offset
     forM [0..count-1] $ \i -> do
-        a <- getAsWord16le
-        b <- getAsWord16le
-        c <- getAsWord16le
         let i6 = i * 6 + 6
-        chA <-lookAhead $ getChannel (a - i6)
-        chB <-lookAhead $ getChannel (b - i6)
-        chC <-lookAhead $ getChannel (c - i6)
-        return $ newPattern { patternNumber = i, patternRows = makeRowsWithShared makeShared [chA, chB, chC] }
+        offs <- replicateM 3 $ (\x -> x - i6) <$> getAsWord16le
+        chs <- mapM (lookAhead.getChannel) offs
+        return $ newPattern { patternNumber = i
+                            , patternRows = makeRowsWithShared makeShared chs }
 
 
 putPatterns :: ModuleData -> (Put, Int)
 putPatterns md = (putOffs >> sequence_ pput, paternsOffsetsTableLength +  sum patternsLengths)
     where
         paternsOffsetsTableLength = 6 * length (patterns md)
-        (pput, patternsLengths) = unzip $ map putChannel $ concatMap (channelsFromRows . patternRows) $ patterns md
-        putOffs = foldM doPutOffs paternsOffsetsTableLength patternsLengths
-        doPutOffs a x = do
-            putAsWord16le a
-            return $ a + x
+        (pput, patternsLengths) = unzip [ putChannel ch | pt <- patterns md, ch <- channelsFromRows $ patternRows pt]
+        putOffs = putOffsets paternsOffsetsTableLength patternsLengths
 
 
 showASCRow :: Row -> String
@@ -285,20 +282,19 @@ showsNoteCmd _           = showChar '#'
 showsEnvFreq :: EnvFreq -> ShowS
 showsEnvFreq x = if x == 0 then ("___" ++) else shows3 x
 
-showsEnvForm :: Maybe EnvForm -> ShowS
-showsEnvForm Nothing = showChar '_'
-showsEnvForm (Just x) = lookupChar '_'
-                        [ (EnvFormRepDecay, '\\')
-                        , (EnvFormRepDecayAttack, 'V')
-                        , (EnvFormRepAttack, '/')
-                        , (EnvFormRepAttackDecay, '^')
-                        ] x
+showsEnvForm :: EnvForm -> ShowS
+showsEnvForm EnvFormNone = showChar '_'
+showsEnvForm x = lookupChar '_' [ (EnvFormRepDecay, '\\')
+                                , (EnvFormRepDecayAttack, 'V')
+                                , (EnvFormRepAttack, '/')
+                                , (EnvFormRepAttackDecay, '^')
+                                ] x
 
 showsNoiseMask :: ChannelMask -> ShowS
 showsNoiseMask x = if x == noChannelMask then ('_':) else showsB 1 $ channelMaskValue x
 
 showsNoise :: Noise -> ShowS
-showsNoise x = if x == noNoise then ('_':) else shows32 x
+showsNoise x = if x == noNoise then ('_':) else shows32 $ fromNoise x
 
 ---------------
 makeShared :: [Note] -> Shared
@@ -351,7 +347,9 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
                 getNotes n
             | x >= 0xa0 && x <= 0xbf = getNotes $ n{ noteSample = Just (x - 0xa0) }      -- Set current sample
             | x >= 0xc0 && x <= 0xdf = getNotes $ n{ noteOrnament = Just (x - 0xc0) }    -- Set current image
-            | x >= 0xe0 && x <= 0xef = getNotes $ n{ noteVolume = Just (x - 0xe0) }      -- Set current volume
+            | x == 0xe0 = getNotes $ n { noteEnvEnable = Just True, noteVolume = Just 0}
+            | x >= 0xe1 && x <= 0xef = getNotes $ n{ noteVolume = Just (x - 0xe0)
+                                                   , noteEnvEnable = Just False }      -- Set current volume
             | x == 0xf0 = do                                                             -- Set noise period
                 noise <- lift getWord8
                 getNotes $ n{noteNoise = toNoise noise}
@@ -362,14 +360,14 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             | x == 0xf5 = setCmd $ NoteCmdGlisUp 0                                -- GlisUp command
             | x == 0xf6 = setCmd $ NoteCmdGlisDn 0                                -- GlisDn command
             | x == 0xf7 = setCmd NoteCmdPortaR                                    -- Port.S+ command
-            | x == 0xf8 = getNotes $ n{ noteEnvForm = Just EnvFormRepDecay }      -- Set envelope form 8 '\'
+            | x == 0xf8 = getNotes $ n{ noteEnvForm = EnvFormRepDecay }           -- Set envelope form 8 '\'
             | x == 0xf9 = setCmd $ NoteCmdPorta 0 0                               -- Port.S- command
-            | x == 0xfa = getNotes $ n{ noteEnvForm = Just EnvFormRepDecayAttack }-- Set envelope form 10 'V'
+            | x == 0xfa = getNotes $ n{ noteEnvForm = EnvFormRepDecayAttack }     -- Set envelope form 10 'V'
             | x == 0xfb = do                                                      -- Volume slide
                 d <- lift getWord8
                 getNotes $ n{ noteCmd = NoteCmdVolSlide $ intExpand 32 d}
-            | x == 0xfc = getNotes $ n{ noteEnvForm = Just EnvFormRepAttack }     -- Set envelope form 12 '/'
-            | x == 0xfe = getNotes $ n{ noteEnvForm = Just EnvFormRepAttackDecay }-- Set envelope form 14 '^'
+            | x == 0xfc = getNotes $ n{ noteEnvForm = EnvFormRepAttack }          -- Set envelope form 12 '/'
+            | x == 0xfe = getNotes $ n{ noteEnvForm = EnvFormRepAttackDecay }     -- Set envelope form 14 '^'
             | otherwise = getNotes n
             where
                 setCmd c = do
@@ -377,14 +375,14 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
                     getNotes $ n{ noteCmd = c $ d }
 
         yieldNote x = do
-            e <- if (noteVolume x == Just 0)
+            e <- if (noteEnvEnable x == Just True)
                     then lift $ toEnvFreq <$> getWord8
                     else return $ noteEnvFreq x
             yieldNote' $ x{noteEnvFreq = e}
 
         yieldNote' x = do
             r <- get
-            ns <- getNotes $ x{noteCmd = NoteCmdNone}
+            ns <- getNotes $ x{noteCmd = NoteCmdNone }
             return $ x : replicate r newNote ++ ns
 
 putChannel :: Channel -> (Put,Int)
@@ -392,16 +390,23 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
     where
         doPutNote :: Note -> (Note,Maybe Int) -> State (Put,Int) Note
         doPutNote oN (nN, mc) = do
-            when (noteSample oN /= noteSample nN) $ doModifyM 0xa0 $ noteSample nN
-            when (noteOrnament oN /= noteOrnament nN) $ doModifyM 0xc0 $ noteOrnament nN
-            when (noteVolume oN /= noteVolume nN) $ doModifyM 0xe0 $ noteVolume nN
-            when (noteNoise oN /= noteNoise nN) $ doModifyC 0xf0 $ noteNoise nN
-            when (noteEnvForm oN /= noteEnvForm nN)
-                $ doModifyM  0xf0 $ (fromEnum <$> noteEnvForm nN)
+            when (noteSample nN /= Nothing)
+                $ doModifyM 0xa0 $ noteSample nN
+            when (noteOrnament nN /= Nothing)
+                $ doModifyM 0xc0 $ noteOrnament nN
+            when (noteVolume nN /= Nothing && noteVolume nN /= Just 0)
+                $ doModifyM 0xe0 $ noteVolume nN
+            when (noteEnvEnable nN /= noteEnvEnable oN && noteEnvEnable nN == Just True)
+                $ doModify1 0xe0
+            when (noteNoise nN /= Nothing)
+                $ doModifyC 0xf0 $ fromNoise $ noteNoise nN
+            when (noteEnvForm nN /= noteEnvForm oN && noteEnvForm nN /= EnvFormNone)
+                $ doModify1 $ 0xf0 + (fromEnum $ noteEnvForm nN)
             maybe (return ()) (\c -> doModify1 $ 0x60 + c) mc
-            when (noteCmd nN /= NoteCmdNone) $ putNoteCmd nN
+            when (noteCmd nN /= NoteCmdNone)
+                $ putNoteCmd nN
             doModify1 $ putPitch $ notePitch nN
-            when (noteVolume nN == Just 0 &&  all (/= notePitch nN) [Release,Pause,NoNote])
+            when (noteEnvEnable nN == Just True &&  all (notePitch nN /=) [Release,Pause,NoNote])
                 $ doModify1 $ noteEnvFreq nN
             return nN
 
@@ -458,21 +463,16 @@ getInstruments s = do
             }
 
 putInstruments :: (InstrumentData d) => [Instrument d] -> (Put, Int)
-putInstruments inss = (soffs >> sequence_ p, 2 * length l + sum l)
+putInstruments inss = (putOffsets 64 l >> p, 2 * length l + sum l)
     where
-        p::[Put]
-        (p,l) = unzip [ (evalStateT (doPutID ins) 0, sizeInstrumentData (instrumentData ins)) | ins <- inss]
-        soffs = foldM (\a x -> putAsWord16le a >>  return (a+x)) 64 l
-
-        doPutID ins = do
-            let ls = instrumentLoopStart ins
-            let le = instrumentLoopEnd ins
-            let inds = instrumentData ins
+        p = mapM_ doPutID inss
+        l = [sizeInstrumentData (instrumentData i) | i <- inss]
+        doPutID i = do
+            let ls = instrumentLoopStart i
+            let le = instrumentLoopEnd i
+            let inds = instrumentData i
             let lsd = length inds
-            forM_  inds $ \ind -> do
-                i<-get
-                lift $ putInstrumentData i ls le lsd ind
-                put $ i + 1
+            foldM_ (\c ind -> putInstrumentData c ls le lsd ind >> return (c + 1)) 0 inds
 
 
 

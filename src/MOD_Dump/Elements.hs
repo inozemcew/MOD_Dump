@@ -11,11 +11,11 @@ module MOD_Dump.Elements
     , Pitch(Pitch, Pause, Release, NoNote), pitchKey, pitchOctave, isPitch, pitchC1, pitchAS0
     , EnvFreq, toEnvFreq, noEnvFreq, EnvForm(..), noEnvForm
     , ChannelMask, channelMaskValue, noChannelMask
-    , Noise, toNoise, noNoise
+    , Noise, toNoise, fromNoise, noNoise
     , Position, newPosition, positionNumber, positionTranspose
     , NoteCmd(..)
     , Shared, sharedEnvForm, sharedEnvFreq, sharedMask,sharedNoise, newShared
-    , Note, noteCmd, notePitch, noteSample, noteOrnament, noteVolume, noteEnvForm, noteEnvFreq, noteNoise, newNote
+    , Note(..), newNote
     , Channel, packChannel
     , Row, rowNumber, rowShared, rowNotes, makeRows, makeRowsWithShared, channelsFromRows
     , Pattern, patternNumber, patternRows, newPattern
@@ -23,8 +23,9 @@ module MOD_Dump.Elements
     , ModuleData(..), newModuleData
     ) where
 
-import Data.List(transpose, intercalate, groupBy)
+import Data.List(transpose, intercalate, groupBy, mapAccumL)
 import MOD_Dump.Utils
+import Control.Monad.State
 
 data ModuleData = AModuleData
     { delay :: Int
@@ -143,7 +144,7 @@ data EnvForm = EnvFormNone
              | EnvFormAttackSus
              | EnvFormRepAttackDecay deriving (Eq)
 
-noEnvForm = Just EnvFormNone
+noEnvForm = EnvFormNone
 
 instance Enum EnvForm where
     toEnum x | (x >= 0 && x <= 3) || x == 9  = EnvFormDecay
@@ -188,13 +189,16 @@ instance Show ChannelMask where
     showsPrec _ (ChannelMask v) = showsHex 1 v
 
 ---------------
-type Noise = Int
+type Noise = Maybe Int
 
 toNoise :: (Integral a) => a -> Noise
-toNoise = fromIntegral
+toNoise = Just . fromIntegral
+
+fromNoise :: (Integral a) => Noise -> a
+fromNoise = maybe (-1) fromIntegral
 
 noNoise :: Noise
-noNoise = 0
+noNoise = Nothing
 
 ---------------
 data NoteCmd = NoteCmdNone
@@ -236,17 +240,17 @@ instance Show NoteCmd where
 
 data Shared = AShared
     { sharedEnvFreq :: EnvFreq
-    , sharedEnvForm :: Maybe EnvForm
+    , sharedEnvForm :: EnvForm
     , sharedMask :: ChannelMask
     , sharedNoise :: Noise } deriving (Eq)
 
 newShared :: Shared
-newShared = AShared noEnvFreq Nothing noChannelMask noNoise
+newShared = AShared noEnvFreq noEnvForm noChannelMask noNoise
 
 instance Show Shared where
     showsPrec _ s = ('{':) . shows (sharedEnvForm s). showsHex 4 (sharedEnvFreq s) .(' ':)
                            . shows (sharedMask s) .(' ':)
-                           . showsHex 2 (sharedNoise s) . ('}':)
+                           . maybe ("--" ++ ) (showsHex 2) (sharedNoise s) . ('}':)
 
 
 data Note = ANote
@@ -255,11 +259,12 @@ data Note = ANote
     , noteSample :: Maybe Int
     , noteOrnament :: Maybe Int
     , noteVolume :: Maybe Int
-    , noteEnvForm :: Maybe EnvForm
+    , noteEnvEnable:: Maybe Bool
+    , noteEnvForm :: EnvForm
     , noteEnvFreq :: EnvFreq
     , noteNoise :: Noise } deriving (Eq)
 
-newNote = ANote NoteCmdNone NoNote Nothing Nothing Nothing Nothing noEnvFreq noNoise
+newNote = ANote NoteCmdNone NoNote Nothing Nothing Nothing Nothing noEnvForm noEnvFreq noNoise
 
 instance Show Note where
     showsPrec _ n = ('{':) . shows (notePitch n) . (' ':)
@@ -292,8 +297,18 @@ channelsFromRows :: [Row] -> [Channel]
 channelsFromRows rs = transpose [ rowNotes r | r <- rs ]
 
 packChannel :: Channel -> [(Note, Maybe Int)]
-packChannel ch = let g = [ (head x,length  x-1) | x <- groupBy (\_ x -> x == newNote) ch]
-                 in concat [(x, Just y):[(i, Nothing)| (i,_) <- ts] | ((x,y):ts) <- groupBy (\x y -> snd x == snd y) g]
+packChannel ch = snd $ mapAccumL replaceSameWithNoting (newNote, -1) notesCountedZeros
+    where
+        notesCountedZeros = [(head x, length x - 1) | x <- groupBy (\_ x -> x == newNote) ch]
+        replaceSameWithNoting old new  = (new, doReplace old new)
+        doReplace (n, a) (x,y)  =
+            let
+                x' = x { noteSample   = if noteSample x == noteSample n     then Nothing else noteSample x
+                       , noteOrnament = if noteOrnament x == noteOrnament n then Nothing else noteOrnament x
+                       , noteVolume   = if noteVolume x == noteVolume n     then Nothing else noteVolume x
+                       , noteNoise    = if noteNoise x == noteNoise n       then Nothing else noteNoise x
+                       }
+            in (x', if (y == a) then Nothing else Just y)
 
 
 instance Show Row where

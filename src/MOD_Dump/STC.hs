@@ -7,7 +7,7 @@ import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits
-import Data.List(intersperse, intercalate, groupBy)
+import Data.List(intersperse, intercalate, groupBy, mapAccumL, mapAccumR)
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.Maybe
@@ -112,7 +112,7 @@ putOrnaments orns = forM_ orns $ \o -> do
 
 showSTCOrnament :: Ornament -> [String]
 showSTCOrnament orn = let o = concat [showsSgnInt 3 (ornamentDataTone d) " " |  d <- ornamentData orn]
-                   in [padSRight (length o) $ "Ornament: " ++ (show $ ornamentNumber orn), o]
+                      in [padSRight (length o) $ "Ornament: " ++ (show $ ornamentNumber orn), o]
 
 -----------------------------------------------------------------------------
 
@@ -156,9 +156,7 @@ showSTCSample s = (padSRight width32 $ "Sample: " ++ show (sampleNumber s))
 ---------------
 getSampleData :: Get SampleData
 getSampleData = do
-    b0 <- getWord8
-    b1 <- getWord8
-    b2 <- getWord8
+    [b0, b1, b2] <- replicateM 3 getWord8
     let v = fromIntegral $ b0 .&. 15
     let nm = not $ testBit b1 7
     let tm = not $ testBit b1 6
@@ -232,17 +230,13 @@ putPatterns ts ps = do
     putWord8 255
     puts
         where
-            pch = [(patternNumber p, ch) | p <- ps, ch <- channelsFromRows $ patternRows p ]
-            (pts, chs) = unzip pch
+            (pts, chs) = unzip [(patternNumber p, ch) | p <- ps, ch <- channelsFromRows $ patternRows p ]
             (puts, ds) = putChannels chs
 
-            offs :: [Int] -- Channel_offset
-            offs = evalState (mapM calcOffset ds) $ patternsTable ts + length ps * 7 + 1
+            offs :: [Int] -- Channels_offsets
+            offs =  snd $ mapAccumL calcOffset (patternsTable ts + length ps * 7 + 1) ds
 
-            calcOffset:: Either Int Int -> State Int Int
-            calcOffset l = case l of
-                                Left x  -> return $ offs !! (x-1)
-                                Right x -> state (\s -> (s, x + s))
+            calcOffset s x = either (\l -> (s, offs !! (l-1))) (\r -> (r + s, s)) x
 
             putOffsets o (n, l) = do
                 when ( o /= n) $ putAsWord8 n
@@ -252,21 +246,19 @@ putPatterns ts ps = do
 
 getPattern :: Int -> Get Pattern
 getPattern n = do
-            chA <-getChannel
-            chB <-getChannel
-            chC <-getChannel
-            return $ newPattern {patternNumber = n, patternRows = makeRows [chA,chB,chC] }
+            chs <- replicateM 3 getChannel
+            return $ newPattern { patternNumber = n, patternRows = makeRows chs }
 
 putChannels :: [Channel] -> (Put, [Either Int Int])
-putChannels chs = foldr doPutChannel (return (), []) nchs
+putChannels chs = mapAccumR doPutChannel (return ()) nchs
     where
         nchs = zip [1..] chs
-        findSame (n,ch) = fst $ head $ dropWhile (\(i,c) -> c /= ch && i < n) nchs
-        doPutChannel (n, ch) (ap, al) = let f = findSame (n, ch)
-                                        in if f == n
-                                              then let (p, l) = putChannel ch
-                                                   in (p >> ap, Right l : al)
-                                              else (ap, Left f : al)
+        findSame (n, ch) = fst $ head $ dropWhile (\(i,c) -> c /= ch && i < n) nchs
+        doPutChannel ap (n, ch) = let f = findSame (n, ch)
+                                  in if f == n
+                                        then let (p, l) = putChannel ch
+                                             in (p >> ap, Right l)
+                                        else (ap, Left f)
 
 showSTCRow :: Row -> String
 showSTCRow r = foldr id "" $ intersperse (" | " ++) $ showsHex 2 (rowNumber r) : ( map showsNote $ rowNotes r )
@@ -290,9 +282,9 @@ showsNote n = if (isPitch p) then showsPitch p . (' ':) . showsHex 1 s . showsOr
         s = maybe 0 id $ noteSample n
         p = notePitch n
         o = noteOrnament n
-        showsOrnEnv = if (noteEnvForm n == Nothing || noteEnvForm n == noEnvForm)
+        showsOrnEnv = if (noteEnvForm n == noEnvForm)
                          then maybe ("000"++) (\x -> ("F0"++ ) . (showsHex 1 x)) o
-                         else let Just ef = noteEnvForm n in showsHex 1 (fromEnum ef) . showsHex 2 (noteEnvFreq n)
+                         else showsHex 1 (fromEnum $ noteEnvForm n) . showsHex 2 (noteEnvFreq n)
 
 
 getChannel :: Get [Note]
@@ -318,7 +310,7 @@ getChannel = do
                     | x >= 0x70 && x <= 0x7f = getNotes $ n{ noteOrnament = Just (x - 0x70) }
                     | x >= 0x83 && x <= 0x8e = do
                         o <- lift getAsWord8
-                        getNotes $ n{noteEnvForm = Just $ toEnum (x - 0x80), noteEnvFreq = o}
+                        getNotes $ n{noteEnvForm = toEnum (x - 0x80), noteEnvFreq = o, noteEnvEnable = Just True}
                     | x >= 0xa1 && x <= 0xfe = do
                         put (x - 0xa1)
                         getNotes n
@@ -332,28 +324,24 @@ getChannel = do
             return $ x : replicate r newNote ++ ns
 
 putChannel :: Channel -> (Put, Int) -- returns Put chain and length in bytes
-putChannel ch = execState (putNotes (packChannel ch) newNote) (mempty, 0)
+putChannel ch = (p >> putWord8 255, l + 1)
     where
-        putNotes :: [(Note,Maybe Int)] -> Note -> State (Put, Int) ()
-        putNotes []          oldn = doModify (putWord8 255) 1
-        putNotes ((n,mc):ns) oldn = do
-            putNote n oldn mc
-            putNotes ns n
+        (p, l) = execState (foldM_ putNote newNote (packChannel ch)) (mempty, 0)
 
-        putNote :: Note -> Note -> Maybe Int -> State (Put, Int) ()
-        putNote n oldn mc = do
-            maybe (return ()) (\c -> doModify (putCount c) 1) mc
+        putNote oldn (n, mCnt) = do
+            maybe (return ()) (\c -> doModify (putCount c) 1) mCnt
             when (noteSample n /= Nothing && noteSample n /= noteSample oldn)
                 $ doModify (putSample n) 1
             when (noteOrnament n /= Nothing && noteOrnament n /= noteOrnament oldn)
                 $ doModify (putOrnament n) 1
             let (form, freq) = (noteEnvForm n, noteEnvFreq n) in
-                when (form /= Nothing && form /= noEnvForm) $ doModify (putEnv form freq) 2
+                when (form /= noEnvForm) $ doModify (putEnv form freq) 2
             doModify (putPitch $ notePitch n) 1
+            return n
 
-        putPitch Pause = putWord8 128
+        putPitch Pause  = putWord8 128
         putPitch NoNote = putWord8 129
-        putPitch n = putAsWord8 $ (fromEnum n) - fromEnum pitchC1
+        putPitch n      = putAsWord8 $ (fromEnum n) - fromEnum pitchC1
 
         putCount c = putAsWord8 $ c + 0xa1
 
@@ -361,7 +349,7 @@ putChannel ch = execState (putNotes (packChannel ch) newNote) (mempty, 0)
 
         putOrnament n = putAsWord8 $ (maybe 0 id $ noteOrnament n) + 0x70
 
-        putEnv (Just form) freq  = do
+        putEnv form freq  = do
             putAsWord8 $ fromEnum form + 0x80
             putAsWord8 freq
 

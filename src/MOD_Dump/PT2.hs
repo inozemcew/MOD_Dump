@@ -10,7 +10,7 @@ import Data.Bits
 import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.State
-import Data.List(mapAccumR)
+import Data.List(mapAccumR, mapAccumL, dropWhileEnd)
 
 pt2Module :: Module
 pt2Module = newModule
@@ -63,9 +63,9 @@ putModuleData md = do
     putAsWord8 $ length $ positions md
     putAsWord8 $ loopingPos md
     putWord16le 0
-    oo <- foldM foldOffs chStart samplesLengths
+    oo <- foldM foldOffs chStart smpLengths
     putAsWord16le oo
-    foldM_ foldOffs (oo+3) $ ornamentsLengths
+    foldM_ foldOffs (oo+3) $ ornLengths
     putAsWord16le patOffset
     putLazyByteString $ B.pack $ padSRight 30 $ title md
     forM_ (positions md) $ \p -> putAsWord8 $ positionNumber p
@@ -79,19 +79,18 @@ putModuleData md = do
     doPutOrnaments
 
         where
-            (doPutSamples, samplesLengths) = putSamples $ samples md
-            (doPutOrnaments, ornamentsLengths) = putOrnaments $ ornaments md
-            patOffset = 132 + length (positions md)
-            (doPutPatterns, channelsLengths) = putPatterns $ patterns md
-            (chsOffs, chStart) = runState calcOffsets $ 2 * length channelsLengths + 2 + patOffset
+            (doPutPatterns, chsLengths) = putPatterns $ patterns md
+            (doPutSamples, smpLengths) = putSamples $ samples md
+            (doPutOrnaments, ornLengths) = putOrnaments $ ornaments md
 
-            foldOffs s o = if o==0 then putWord16le 0 >> return s
-                                   else do
-                                       putAsWord16le $ s
-                                       return $ s + o
-            calcOffsets = forM channelsLengths $ \l -> case l of
-                                                            Left x  -> return $ chsOffs !! (x-1)
-                                                            Right x -> state (\s -> (s, x + s))
+            patOffset = 132 + length (positions md)
+            (chStart, chsOffs) = mapAccumL calcOffsets (2 * length chsLengths + 2 + patOffset) chsLengths
+
+            calcOffsets s x = either (\l -> (s, chsOffs !! (l - 1))) (\r -> (s + r, s)) x
+
+            foldOffs s o = do
+                if o==0 then putWord16le 0 else putAsWord16le s
+                return $ s + o
 
 
 
@@ -119,37 +118,37 @@ showsNote n = showsPitch (notePitch n)
         showsCmd NoteCmdNone = (' ':)
         showsCmd _ = ('*':)
 
-        showsEForm = if noteEnvForm n `elem` [Nothing, Just EnvFormNone]
+        showsEForm = if noteEnvForm n == EnvFormNone
                         then maybe ('0':) (const ('F':)) $  noteOrnament n
-                        else let (Just ef) = noteEnvForm n in showsHex 1 $ fromEnum ef
+                        else showsHex 1 $ fromEnum $ noteEnvForm n
 
 
 getPatterns :: Int -> Get [Pattern]
 getPatterns n = forM [0..n] $ \i -> do
     here <- bytesRead
-    chs <- replicateM 3 $ do
+    offs <- replicateM 3 $ do
         ch <- getAsWord16le
         guard (ch > fromIntegral here)
         return ch
-    channels <- mapM (lookAhead . getChannel) chs
+    channels <- mapM (lookAhead . getChannel) offs
     return newPattern
         { patternNumber = i
         , patternRows = makeRowsWithShared makeShared channels }
 
 putPatterns :: [Pattern] -> (Put,[Either Int Int])
-putPatterns pts = foldr foldChannel mempty nchs
+putPatterns pts = mapAccumR foldChannel mempty enumeratedChs
     where
-        chs = concatMap (channelsFromRows . patternRows) pts
-        nchs = zip [1..] chs
-        findSame (n,ch) = fst $ head $ dropWhile (\(i,c) -> c /= ch && i < n) nchs
-        foldChannel (n, ch) (ap, al) = let (p, l) = putChannel ch
-                                           f = findSame (n, ch)
-                                       in  if f == n then (p >> ap, Right l : al)
-                                                     else (ap, Left f : al)
+        enumeratedChs = zip [1..] [ ch | pt <- pts, ch <- channelsFromRows $ patternRows pt ]
+        findSame (n,ch) = fst $ head $ dropWhile (\(i,c) -> c /= ch && i < n) enumeratedChs
+        foldChannel ap (n, ch) = let (p, l) = putChannel ch
+                                     f = findSame (n, ch)
+                                 in  if f == n then (p >> ap, Right l)
+                                               else (ap, Left f)
 
 
 makeShared :: [Note] -> Shared
-makeShared notes = newShared { sharedEnvFreq = foldl (\a x -> if noteEnvFreq x == noEnvFreq then a else noteEnvFreq x) noEnvFreq notes }
+makeShared notes = newShared
+        { sharedEnvFreq = foldl (\a x -> if noteEnvFreq x == noEnvFreq then a else noteEnvFreq x) noEnvFreq notes }
 
 getChannel :: Int -> Get Channel
 getChannel offset = do
@@ -162,10 +161,10 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
         doPutNote oN (nN, mc) = do
             maybe (return ()) (\x -> doModify1 $ 0x20 + x) mc
             when (noteSample oN /= noteSample nN) $ doModifyM 0xe0 $ noteSample nN
-            when (noteEnvForm nN /= Nothing) $ do
-                let (Just ef) = fromEnum <$> noteEnvForm nN
-                doModify1 $ 0x70 + ef
-                when (ef <15) $ doModify 2 $ putAsWord16le $ noteEnvFreq nN
+            when (noteEnvEnable nN == Just True) $ do
+                doModify1 $ 0x70 + fromEnum (noteEnvForm nN)
+                doModify 2 $ putAsWord16le $ noteEnvFreq nN
+            when (noteEnvEnable nN == Just False) $ doModify1 0x7f
             when (noteOrnament oN /= noteOrnament nN) $ doModifyM 0x60 $ noteOrnament nN
             when (noteVolume oN /= noteVolume nN) $ doModifyM 0x10 $ noteVolume nN
             when (noteCmd nN /= NoteCmdNone) $ case noteCmd nN of
@@ -206,10 +205,12 @@ getNotes note = do
                 | x >= 0xe1 = getNotes $ note { noteSample = Just (x - 0xe0) }
                 | x == 0xe0 = yieldNotes $ note { notePitch = Pause }
                 | x >= 0x80 = yieldNotes $ note { notePitch = toEnum $ x - 0x80 + fromEnum pitchC1 }
-                | x == 0x7f = getNotes $ note { noteEnvForm = noEnvForm }
+                | x == 0x7f = getNotes $ note { noteEnvEnable = Just False }
                 | x >= 0x71 = do
                     freq <- lift getAsWord16le
-                    getNotes $ note { noteEnvForm = Just $ toEnum (x - 0x70), noteEnvFreq = freq }
+                    getNotes $ note { noteEnvForm = toEnum (x - 0x70)
+                                    , noteEnvFreq = freq
+                                    , noteEnvEnable = Just True }
                 | x == 0x70 = yieldNotes note
                 | x >= 0x60 = getNotes $ note { noteOrnament = Just (x - 0x60) }
                 | x >= 0x20 = put (x - 0x20) >> getNotes note
