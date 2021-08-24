@@ -21,11 +21,13 @@ module MOD_Dump.Elements
     , Pattern, patternNumber, patternRows, newPattern
     , Tables, positionsTable, patternsTable, samplesTable, ornamentsTable, newTables
     , ModuleData(..), newModuleData
+    , Changed(..)
     ) where
 
 import Data.List(transpose, intercalate, groupBy, mapAccumL)
 import MOD_Dump.Utils
 import Control.Monad.State
+import MOD_Dump.FlagSet
 
 data ModuleData = AModuleData
     { delay :: Int
@@ -252,19 +254,27 @@ instance Show Shared where
                            . shows (sharedMask s) .(' ':)
                            . maybe ("--" ++ ) (showsHex 2) (sharedNoise s) . ('}':)
 
+data Changed = ChangedSample
+             | ChangedOrnament
+             | ChangedVolume
+             | ChangedEnvEnable
+             | ChangedEnvForm
+             | ChangedEnvFreq
+             | ChangedNoise deriving (Eq, Enum, Bounded, Show)
 
 data Note = ANote
     { noteCmd :: NoteCmd
     , notePitch :: Pitch
-    , noteSample :: Maybe Int
-    , noteOrnament :: Maybe Int
-    , noteVolume :: Maybe Int
-    , noteEnvEnable:: Maybe Bool
+    , noteSample :: Int
+    , noteOrnament :: Int
+    , noteVolume :: Int
+    , noteEnvEnable:: Bool
     , noteEnvForm :: EnvForm
     , noteEnvFreq :: EnvFreq
-    , noteNoise :: Noise } deriving (Eq)
+    , noteNoise :: Noise
+    , noteFlags :: FlagSet Changed } deriving (Eq)
 
-newNote = ANote NoteCmdNone NoNote Nothing Nothing Nothing Nothing noEnvForm noEnvFreq noNoise
+newNote = ANote NoteCmdNone NoNote 0 0 0 False noEnvForm noEnvFreq noNoise noFlags
 
 instance Show Note where
     showsPrec _ n = ('{':) . shows (notePitch n) . (' ':)
@@ -301,14 +311,7 @@ packChannel ch = snd $ mapAccumL replaceSameWithNoting (newNote, -1) notesCounte
     where
         notesCountedZeros = [(head x, length x - 1) | x <- groupBy (\_ x -> x == newNote) ch]
         replaceSameWithNoting old new  = (new, doReplace old new)
-        doReplace (n, a) (x,y)  =
-            let
-                x' = x { noteSample   = if noteSample x == noteSample n     then Nothing else noteSample x
-                       , noteOrnament = if noteOrnament x == noteOrnament n then Nothing else noteOrnament x
-                       , noteVolume   = if noteVolume x == noteVolume n     then Nothing else noteVolume x
-                       , noteNoise    = if noteNoise x == noteNoise n       then Nothing else noteNoise x
-                       }
-            in (x', if (y == a) then Nothing else Just y)
+        doReplace (n, a) (x,y)  = (x, if (y == a) then Nothing else Just y)
 
 
 instance Show Row where

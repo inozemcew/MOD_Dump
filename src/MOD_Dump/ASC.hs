@@ -72,6 +72,7 @@ module MOD_Dump.ASC where
 import MOD_Dump.Elements
 import MOD_Dump.Module
 import MOD_Dump.Utils
+import MOD_Dump.FlagSet
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
 import Data.Binary.Put
@@ -305,7 +306,7 @@ makeShared abc = newShared {
     sharedNoise = noise
 }
     where
-        findF f a x = if noteVolume x == Just 0 then f x else a
+        findF f a x = if noteVolume x == 0 then f x else a
         eFreq = foldl (findF noteEnvFreq) noEnvFreq abc
         eForm = foldl (findF noteEnvForm) noEnvForm abc
         maskRShift1 m = m { channelMaskValue = channelMaskValue m `div` 2 + 4 }
@@ -316,16 +317,15 @@ makeShared abc = newShared {
 ---------------
 showsNote :: Note -> ShowS
 showsNote note = showsNoteCmd (noteCmd note) .(' ':). showsPitch pitch .
-    if isPitch pitch then (' ':). shows32 (maybe 0 id $ noteSample note)
-                         .(' ':). shows32 (maybe 0 id $ noteOrnament note)
+    if isPitch pitch then (' ':). shows32 (noteSample note)
+                         .(' ':). shows32 (noteOrnament note)
                          .(' ':). showsVolume (noteVolume note)
                          .(' ':)
                      else (" _ _ __ "++)
         where
             pitch = notePitch note
-            showsVolume Nothing = showString "--"
-            showsVolume (Just 0) = showString "EN"
-            showsVolume (Just v) = shows2 v
+            showsVolume 0 = showString "EN"
+            showsVolume v = shows2 v
 
 ---------------
 getChannel :: Int -> Get Channel   --- Empty channel returns empty list - error!!
@@ -337,22 +337,47 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             switch n v
 
         switch n x
-            | x == 255 = return []                                              -- End of pattern
-            | x <= 0x55 = yieldNote $ n{ notePitch = toEnum $ x + fromEnum pitchAS0 } -- Note, may be followed by env period if volume='EN'
-            | x >= 0x56 && x <= 0x5d = yieldNote' $ n{ notePitch = NoNote }         -- No note, just placeholder for empty channel
-            | x == 0x5e = yieldNote' $ n{ notePitch = Release }                   -- Release sample
-            | x == 0x5f = yieldNote' $ n{ notePitch = Pause }                     -- Pause
-            | x >= 0x60 && x <= 0x9f = do                                         -- Skip x rows after note or relese or pause
+            | x == 255 = return []
+            -- End of pattern
+
+            | x <= 0x55 = yieldNote $ n{ notePitch = toEnum $ x + fromEnum pitchAS0 }
+            -- Note, may be followed by env period if volume='EN'
+
+            | x >= 0x56 && x <= 0x5d = yieldNote' $ n{ notePitch = NoNote }
+            -- No note, just placeholder for empty channel
+
+            | x == 0x5e = yieldNote' $ n{ notePitch = Release }
+            -- Release sample
+
+            | x == 0x5f = yieldNote' $ n{ notePitch = Pause }
+            -- Pause
+
+            | x >= 0x60 && x <= 0x9f = do
                 put (x - 0x60)
                 getNotes n
-            | x >= 0xa0 && x <= 0xbf = getNotes $ n{ noteSample = Just (x - 0xa0) }      -- Set current sample
-            | x >= 0xc0 && x <= 0xdf = getNotes $ n{ noteOrnament = Just (x - 0xc0) }    -- Set current image
-            | x == 0xe0 = getNotes $ n { noteEnvEnable = Just True, noteVolume = Just 0}
-            | x >= 0xe1 && x <= 0xef = getNotes $ n{ noteVolume = Just (x - 0xe0)
-                                                   , noteEnvEnable = Just False }      -- Set current volume
-            | x == 0xf0 = do                                                             -- Set noise period
+            -- Skip x rows after note or relese or pause
+
+            | x >= 0xa0 && x <= 0xbf = getNotes $ n{ noteSample = (x - 0xa0)
+                                                   , noteFlags = noteFlags n `set` ChangedSample }
+            -- Set current sample
+            | x >= 0xc0 && x <= 0xdf = getNotes $ n{ noteOrnament = (x - 0xc0)
+                                                   , noteFlags = noteFlags n `set` ChangedOrnament }
+            -- Set current image
+            | x == 0xe0 = getNotes $ n { noteEnvEnable = True
+                                       , noteVolume = 0
+                                       , noteFlags = noteFlags n `set` ChangedVolume `set` ChangedEnvEnable }
+            -- Set 0 volume and enable envelope
+
+            | x >= 0xe1 && x <= 0xef = getNotes
+                $ n{ noteVolume = (x - 0xe0)
+                   , noteEnvEnable = False
+                   , noteFlags = noteFlags n `set` ChangedVolume `set` ChangedEnvEnable }
+            -- Set current volume
+
+            | x == 0xf0 = do
                 noise <- lift getWord8
-                getNotes $ n{noteNoise = toNoise noise}
+                getNotes $ n{ noteNoise = toNoise noise
+                            , noteFlags = noteFlags n `set` ChangedNoise }        -- Set noise period
             | x == 0xf1 = getNotes $ n{ noteCmd = NoteCmdHldSample }              -- Hold sample command
             | x == 0xf2 = getNotes $ n{ noteCmd = NoteCmdHldImage }               -- Hold image command
             | x == 0xf3 = getNotes $ n{ noteCmd = NoteCmdHldInstr }               -- Hold sample and image
@@ -360,55 +385,71 @@ getChannel offset = skip offset >> evalStateT getNewNotes 0
             | x == 0xf5 = setCmd $ NoteCmdGlisUp 0                                -- GlisUp command
             | x == 0xf6 = setCmd $ NoteCmdGlisDn 0                                -- GlisDn command
             | x == 0xf7 = setCmd NoteCmdPortaR                                    -- Port.S+ command
-            | x == 0xf8 = getNotes $ n{ noteEnvForm = EnvFormRepDecay }           -- Set envelope form 8 '\'
+            | x == 0xf8 = getNotes
+                $ n{ noteEnvForm = EnvFormRepDecay
+                   , noteFlags = noteFlags n `set` ChangedEnvForm }               -- Set envelope form 8 '\'
             | x == 0xf9 = setCmd $ NoteCmdPorta 0 0                               -- Port.S- command
-            | x == 0xfa = getNotes $ n{ noteEnvForm = EnvFormRepDecayAttack }     -- Set envelope form 10 'V'
+            | x == 0xfa = getNotes
+                $ n{ noteEnvForm = EnvFormRepDecayAttack
+                   , noteFlags = noteFlags n `set` ChangedEnvForm }               -- Set envelope form 10 'V'
             | x == 0xfb = do                                                      -- Volume slide
                 d <- lift getWord8
                 getNotes $ n{ noteCmd = NoteCmdVolSlide $ intExpand 32 d}
-            | x == 0xfc = getNotes $ n{ noteEnvForm = EnvFormRepAttack }          -- Set envelope form 12 '/'
-            | x == 0xfe = getNotes $ n{ noteEnvForm = EnvFormRepAttackDecay }     -- Set envelope form 14 '^'
+            | x == 0xfc = getNotes
+                $ n{ noteEnvForm = EnvFormRepAttack
+                   , noteFlags = noteFlags n `set` ChangedEnvForm }              -- Set envelope form 12 '/'
+            | x == 0xfe = getNotes
+                $ n{ noteEnvForm = EnvFormRepAttackDecay
+                   , noteFlags = noteFlags n `set` ChangedEnvForm }              -- Set envelope form 14 '^'
             | otherwise = getNotes n
-            where
-                setCmd c = do
-                    d <- lift getAsWord8
-                    getNotes $ n{ noteCmd = c $ d }
+                where
+                    setCmd c = do
+                        d <- lift getAsWord8
+                        getNotes $ n{ noteCmd = c $ d }
 
         yieldNote x = do
-            e <- if (noteEnvEnable x == Just True)
+            e <- if (noteEnvEnable x)
                     then lift $ toEnvFreq <$> getWord8
                     else return $ noteEnvFreq x
             yieldNote' $ x{noteEnvFreq = e}
 
         yieldNote' x = do
             r <- get
-            ns <- getNotes $ x{noteCmd = NoteCmdNone }
+            ns <- getNotes $ x{noteCmd = NoteCmdNone, noteFlags = noFlags }
             return $ x : replicate r newNote ++ ns
 
 putChannel :: Channel -> (Put,Int)
-putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1 255 ) (mempty, 0)
+putChannel ch = execState (mapM_ doPutNote (packChannel ch) >> doModify1 255 ) (mempty, 0)
     where
-        doPutNote :: Note -> (Note,Maybe Int) -> State (Put,Int) Note
-        doPutNote oN (nN, mc) = do
-            when (noteSample nN /= Nothing)
+        doPutNote :: (Note, Maybe Int) -> State (Put, Int) ()
+        doPutNote (nN, mc) = do
+            when (noteFlags nN `isSet` ChangedSample)
                 $ doModifyM 0xa0 $ noteSample nN
-            when (noteOrnament nN /= Nothing)
+
+            when (noteFlags nN `isSet` ChangedOrnament)
                 $ doModifyM 0xc0 $ noteOrnament nN
-            when (noteVolume nN /= Nothing && noteVolume nN /= Just 0)
+
+            when (noteFlags nN `isSet` ChangedVolume && noteVolume nN /= 0)
                 $ doModifyM 0xe0 $ noteVolume nN
-            when (noteEnvEnable nN /= noteEnvEnable oN && noteEnvEnable nN == Just True)
+
+            when (noteFlags nN `isSet` ChangedEnvEnable && noteEnvEnable nN)
                 $ doModify1 0xe0
-            when (noteNoise nN /= Nothing)
+
+            when (noteFlags nN `isSet` ChangedNoise)
                 $ doModifyC 0xf0 $ fromNoise $ noteNoise nN
-            when (noteEnvForm nN /= noteEnvForm oN && noteEnvForm nN /= EnvFormNone)
+
+            when (noteFlags nN `isSet` ChangedEnvForm && noteEnvForm nN /= EnvFormNone)
                 $ doModify1 $ 0xf0 + (fromEnum $ noteEnvForm nN)
+
             maybe (return ()) (\c -> doModify1 $ 0x60 + c) mc
+
             when (noteCmd nN /= NoteCmdNone)
                 $ putNoteCmd nN
+
             doModify1 $ putPitch $ notePitch nN
-            when (noteEnvEnable nN == Just True &&  all (notePitch nN /=) [Release,Pause,NoNote])
+
+            when (noteEnvEnable nN &&  all (notePitch nN /=) [Release,Pause,NoNote])
                 $ doModify1 $ noteEnvFreq nN
-            return nN
 
         putPitch Release = 0x5e
         putPitch Pause = 0x5f
@@ -431,8 +472,7 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
 
         doModify1 f = doModify 1 $ putAsWord8 f
 
-        doModifyM b (Just f) = doModify1 (b + f)
-        doModifyM _ Nothing = return ()
+        doModifyM b f = doModify1 (b + f)
 
         doModifyC c n = doModify 2 $ do
             putWord8 c

@@ -9,6 +9,7 @@ import Data.Binary.Get
 
 import MOD_Dump.Elements
 import MOD_Dump.Utils
+import MOD_Dump.FlagSet
 import MOD_Dump.Module
 import qualified MOD_Dump.STC as STC
 import qualified MOD_Dump.ASC as ASC
@@ -47,6 +48,15 @@ testUtils = test
             , testPadSRight
             , testTrimR
             ]
+
+--------------------
+testFlagSet = TestCase $ foldM_ dofold noFlags [minBound .. maxBound]
+    where
+        dofold :: FlagSet Changed -> Changed -> IO (FlagSet Changed)
+        dofold a x = do
+            let b = a `set` x
+            assertBool ("Flagset " ++ show a ++ " + " ++ show x) $ b `isSet` x
+            return b
 
 --------------------
 stcFNames = [ "Bulba.stc", "AC-DC.stc" ]
@@ -142,4 +152,4 @@ hexDiff a b = hexDiff' 0 a b ++ "\nErrors count: " ++ (show $ length $ filter (\
 
 main :: IO ()
 main = do
-    runTestTTAndExit ( TestList [testElements, testUtils, testSTC, testASC, testPT2, testPT3] )
+    runTestTTAndExit ( TestList [testElements, testUtils, testFlagSet, testSTC, testASC, testPT2, testPT3] )

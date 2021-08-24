@@ -20,7 +20,7 @@ executable MOD-Dump
   main-is:             Main.hs
   -- other-modules:
   -- other-extensions:
-  build-depends:       ghc>=8, base >=4.7, bytestring, binary >=0.8.0.0, mtl, transformers, filepath
+  build-depends:       ghc>=8, base >=4.7, bytestring, binary >=0.8.0.0, mtl, transformers, filepath, containers
   hs-source-dirs:      src
   default-language:    Haskell2010
   other-modules:       MOD_Dump.Formats
@@ -31,6 +31,7 @@ executable MOD-Dump
                      , MOD_Dump.ASC
                      , MOD_Dump.Utils
                      , MOD_Dump.Elements
+                     , MOD_Dump.FlagSet
   default-extensions:  FlexibleContexts
 
 test-suite test-MOD_Dump
@@ -46,4 +47,12 @@ test-suite test-MOD_Dump
                        , MOD_Dump.ASC
                        , MOD_Dump.PT2
                        , MOD_Dump.PT3
-    build-depends:       base >=4.14 && <4.15, HUnit >=1.6.1.0, mtl, binary >=0.8.0.0, bytestring, filepath, transformers
+                       , MOD_Dump.FlagSet
+    build-depends:       base >=4.14 && <4.15
+                       , HUnit >=1.6.1.0
+                       , mtl
+                       , binary >=0.8.0.0
+                       , bytestring
+                       , filepath
+                       , transformers
+                       , containers

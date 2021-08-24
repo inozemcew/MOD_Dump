@@ -3,6 +3,7 @@ module MOD_Dump.PT3 where
 import MOD_Dump.Elements
 import MOD_Dump.Module
 import MOD_Dump.Utils
+import MOD_Dump.FlagSet
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
 import Data.Binary.Put
@@ -133,35 +134,36 @@ putChannel :: [Note] -> (Put, Int)
 putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1 0 ) (mempty, 0)
     where
         doPutNote oN (nN, mc) = do
-            let oNS = noteSample oN
             let nNS = noteSample nN
-            let oNO = noteOrnament oN
             let nNO = noteOrnament nN
-            let e = noteEnvForm nN
+            let ef = noteEnvForm nN
 
-            case (noteSample nN, noteOrnament nN, noteEnvEnable nN) of
-                 (Just s, Just o, Just ee) -> do
-                     doModify1 $ 0xf0 + o
-                     doModify1 $ 2 * s
-                     when (ee) $ do
-                         doModify1 $ 0xb0 + fromEnum e
+            case (noteFlags nN `isSet` ChangedSample
+                 , noteFlags nN `isSet` ChangedOrnament
+                 , noteFlags nN `isSet` ChangedEnvEnable) of
+                 (True, True, True) -> do
+                     doModify1 $ 0xf0 + nNO
+                     doModify1 $ 2 * nNS
+                     when (noteEnvEnable nN) $ do
+                         doModify1 $ 0xb0 + fromEnum ef
                          doModify 2 $ putAsWord16be $ noteEnvFreq nN
-
-                 (Nothing, Nothing, Just False) -> doModify1 $ 0xb0
-                 (Just s, Nothing, Just False) -> do
-                     doModify1 0x10
-                     doModify1 $ s * 2
-                 (Nothing, Nothing, Just True) -> do
-                     doModify1 $ 0xb0 + fromEnum e
-                     doModify 2 $ putAsWord16be $ noteEnvFreq nN
-                 (Just s, Nothing, Just True) -> do
-                     doModify1 $ 0x10 + fromEnum e
-                     doModify 2 $ putAsWord16be $ noteEnvFreq nN
-                     doModify1 $ s * 2
-                 (Nothing, Just o, Nothing) -> doModify1 $ 0x40 + o
-                 (Just s, Nothing, Nothing) -> doModify1 $ 0xd0 + s
+                 (False, False, True) -> if noteEnvEnable nN
+                                            then do
+                                                doModify1 $ 0xb0 + fromEnum ef
+                                                doModify 2 $ putAsWord16be $ noteEnvFreq nN
+                                            else doModify1 $ 0xb0
+                 (True, False, True) -> if  noteEnvEnable nN
+                                           then do
+                                               doModify1 $ 0x10 + fromEnum ef
+                                               doModify 2 $ putAsWord16be $ noteEnvFreq nN
+                                               doModify1 $ nNS * 2
+                                           else do
+                                               doModify1 0x10
+                                               doModify1 $ nNS * 2
+                 (False, True, False) -> doModify1 $ 0x40 + nNO
+                 (True, False, False) -> doModify1 $ 0xd0 + nNS
                  _ -> return ()
-            when (noteVolume oN /= noteVolume nN) $ doModifyM 0xc0 $ noteVolume nN
+            when (noteFlags nN `isSet` ChangedVolume) $ doModifyM 0xc0 $ noteVolume nN
             when (noteCmd nN /= NoteCmdNone) $ case noteCmd nN of
                     NoteCmdGlisUp _ _ -> doModify1 0x01
                     NoteCmdGlisDn _ _ -> doModify1 0x01
@@ -191,7 +193,7 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
         doModify x m = modify $ \(p, l) -> (p >> m, l + x)
         doModify1 x = doModify 1 $ putAsWord8 x
         doModify2 c n = doModify 2 $ putWord8 c >> putAsWord8 n
-        doModifyM x mz = maybe (lift mempty) (\y -> doModify1 (x + y)) mz
+        doModifyM x z = doModify1 $ x + z
 
 getNewNotes :: StateT (Int,[Int]) Get [Note]
 getNewNotes = getNotes newNote
@@ -204,43 +206,57 @@ getNotes note = do
             switch x
                 | x == 0x00 = return []
                 | x >= 0xf0 = do
-                                s <- lift getAsWord8
-                                getNotes $ note { noteOrnament = Just (x - 0xf0)
-                                                , noteSample = Just (s `div` 2)
-                                                , noteEnvEnable = Just False }
-                | x >= 0xd1 = getNotes $ note { noteSample = Just (x - 0xd0) }
-                | x == 0xd0 = yieldNotes note
-                | x >= 0xc1 = getNotes $ note { noteVolume = Just (x - 0xc0) }
+                    s <- lift getAsWord8
+                    getNotes $ note { noteOrnament = (x - 0xf0)
+                                    , noteSample = (s `div` 2)
+                                    , noteEnvEnable = False
+                                    , noteFlags = noteFlags note `set` ChangedOrnament
+                                                                 `set` ChangedSample
+                                                                 `set` ChangedEnvEnable }
+                | x >= 0xd1 = getNotes $ note { noteSample = (x - 0xd0)
+                                              , noteFlags = noteFlags note `set` ChangedSample}
+                | x == 0xd0 = yieldNotes note { notePitch = NoNote }
+                | x >= 0xc1 = getNotes $ note { noteVolume = (x - 0xc0)
+                                              , noteFlags = noteFlags note `set` ChangedVolume}
                 | x == 0xc0 = yieldNotes $ note { notePitch = Pause }
                 | x >= 0xb2 = do
-                                freq <- lift getAsWord16be -- reverse byte order here
-                                getNotes $ note { noteEnvForm = toEnum (x - 0xb0)
-                                                , noteEnvFreq = freq
-                                                , noteEnvEnable = Just True
-                                                }
+                    freq <- lift getAsWord16be -- reverse byte order here
+                    getNotes $ note { noteEnvForm = toEnum (x - 0xb0)
+                                    , noteEnvFreq = freq
+                                    , noteEnvEnable = True
+                                    , noteFlags = noteFlags note `set` ChangedEnvEnable
+                                                                 `set` ChangedEnvForm
+                                                                 `set` ChangedEnvFreq }
                 | x == 0xb1 = do
-                                s <- lift getAsWord8
-                                modify $ \(_, fx) -> (s - 1, fx)
-                                getNotes note
-                | x == 0xb0 = getNotes $ note { noteEnvEnable = Just False }
+                    s <- lift getAsWord8
+                    modify $ \(_, fx) -> (s - 1, fx)
+                    getNotes note
+                | x == 0xb0 = getNotes $ note { noteEnvEnable = False
+                                              , noteFlags = noteFlags note `set` ChangedEnvEnable }
                 | x >= 0x50 = yieldNotes $ note { notePitch = toEnum $ x - 0x50 + fromEnum pitchC1 }
-                | x >= 0x40 = getNotes $ note { noteOrnament = Just (x - 0x40) }
-                | x >= 0x20 = getNotes $ note { noteNoise = toNoise $ x - 0x20 }
+                | x >= 0x40 = getNotes $ note { noteOrnament = (x - 0x40)
+                                              , noteFlags = noteFlags note `set` ChangedOrnament }
+                | x >= 0x20 = getNotes $ note { noteNoise = toNoise $ x - 0x20
+                                              , noteFlags = noteFlags note `set` ChangedNoise }
                 | x >= 0x11 = do
                                 e <- lift getAsWord16be
                                 s <- lift getAsWord8
                                 getNotes note
                                     { noteEnvForm = toEnum (x - 0x10)
                                     , noteEnvFreq = e
-                                    , noteEnvEnable = Just True
-                                    , noteSample = Just (s `div` 2)
-                                    }
+                                    , noteEnvEnable = True
+                                    , noteSample = (s `div` 2)
+                                    , noteFlags = noteFlags note `set` ChangedEnvEnable
+                                                                 `set` ChangedEnvForm
+                                                                 `set` ChangedEnvFreq
+                                                                 `set` ChangedSample }
                 | x == 0x10 = do
                                 s <- lift getAsWord8
                                 getNotes note
-                                    { noteEnvEnable = Just False
-                                    , noteSample = Just (s `div` 2)
-                                    }
+                                    { noteEnvEnable = False
+                                    , noteSample = (s `div` 2)
+                                    , noteFlags = noteFlags note `set` ChangedEnvEnable
+                                                                 `set` ChangedSample }
                 | x <= 0x09 = do
                                 modify $ \(s,fx) -> (s,x:fx)
                                 getNotes note
@@ -251,7 +267,7 @@ getNotes note = do
                 (r,fx) <- get
                 n <- lift $ execStateT (forM fx getFxParams) note
                 put (r,[])
-                ns <- getNewNotes
+                ns <- getNotes note { noteFlags = noFlags }
                 return $ n : replicate r newNote ++ ns
 
             getFxParams fx = do
@@ -292,12 +308,14 @@ showsShared :: Shared -> ShowS
 showsShared s = showsHex 4 (sharedEnvFreq s)
 
 showsNote :: Note -> ShowS
-showsNote n = showsPitch (notePitch n) .(' ':)
-            . showsHex 1 (maybe 0 id $ noteSample n)
-            . showsEForm
-            . showsHex 1 (maybe 0 id $ noteOrnament n)
-            . showsHex 1 (maybe 0 id $ noteVolume n)
-            .(' ':) . showsCmd (noteCmd n)
+showsNote n = if n == newNote
+                 then showString "--- ---- ----"
+                 else showsPitch (notePitch n) .(' ':)
+                    . showsHex 1 (noteSample n)
+                    . showsEForm
+                    . showsHex 1 (noteOrnament n)
+                    . showsHex 1 (noteVolume n)
+                    .(' ':) . showsCmd (noteCmd n)
     where
         showsPitch (Pitch k o ) = showString (["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"] !! fromEnum k) . shows o
         showsPitch Pause = showString "R--"
@@ -311,10 +329,11 @@ showsNote n = showsPitch (notePitch n) .(' ':)
         showsCmd (NoteCmdVibrato x y) = showString "60" . showsHex 1 x . showsHex 1 y
         showsCmd (NoteCmdEnvSlide d x) = ((if x>0 then '9' else 'A'):) . showsHex 1 d . showsHex 3 x
         showsCmd (NoteCmdDelay x) = showString "B0" . showsHex 2 x
-        showsCmd _ = showString "0000"
+        showsCmd _ = showString "----"
 
         showsEForm = if noteEnvForm n == noEnvForm
-                        then maybe ('0':) (const ('F':)) $  noteOrnament n
+                        then if noteOrnament n == 0 then ('0':) else ('F':)
+                        --maybe ('0':) (const ('F':)) $  noteOrnament n
                         else showsHex 1 $ fromEnum $ noteEnvForm n
 
 

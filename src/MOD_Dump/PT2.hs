@@ -3,6 +3,7 @@ module MOD_Dump.PT2 where
 import MOD_Dump.Elements
 import MOD_Dump.Module
 import MOD_Dump.Utils
+import MOD_Dump.FlagSet
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
 import Data.Binary.Put
@@ -104,12 +105,14 @@ showsShared :: Shared -> ShowS
 showsShared s = showsHex 4 (sharedEnvFreq s)
 
 showsNote :: Note -> ShowS
-showsNote n = showsPitch (notePitch n)
-            . showsCmd (noteCmd n)
-            . showsHex 1 (maybe 0 id $ noteSample n)
-            . showsEForm
-            . showsHex 1 (maybe 0 id $ noteOrnament n)
-            . showsHex 1 (maybe 0 id $ noteVolume n)
+showsNote n = if n == newNote
+                 then showString "--- ----"
+                 else showsPitch (notePitch n)
+                    . showsCmd (noteCmd n)
+                    . showsHex 1 (noteSample n)
+                    . showsEForm
+                    . showsHex 1 (noteOrnament n)
+                    . showsHex 1 (noteVolume n)
     where
         showsPitch (Pitch k o ) = showString (["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"] !! fromEnum k) . shows o
         showsPitch Pause = showString "R--"
@@ -119,7 +122,7 @@ showsNote n = showsPitch (notePitch n)
         showsCmd _ = ('*':)
 
         showsEForm = if noteEnvForm n == EnvFormNone
-                        then maybe ('0':) (const ('F':)) $  noteOrnament n
+                        then if noteOrnament n == 0 then ('0':) else ('F':)
                         else showsHex 1 $ fromEnum $ noteEnvForm n
 
 
@@ -156,27 +159,39 @@ getChannel offset = do
     evalStateT getNewNotes 0
 
 putChannel :: [Note] -> (Put, Int)
-putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1 0 ) (mempty, 0)
+putChannel ch = execState (mapM_ doPutNote (packChannel ch) >> doModify1 0 ) (mempty, 0)
     where
-        doPutNote oN (nN, mc) = do
+        doPutNote (nN, mc) = do
             maybe (return ()) (\x -> doModify1 $ 0x20 + x) mc
-            when (noteSample oN /= noteSample nN) $ doModifyM 0xe0 $ noteSample nN
-            when (noteEnvEnable nN == Just True) $ do
-                doModify1 $ 0x70 + fromEnum (noteEnvForm nN)
-                doModify 2 $ putAsWord16le $ noteEnvFreq nN
-            when (noteEnvEnable nN == Just False) $ doModify1 0x7f
-            when (noteOrnament oN /= noteOrnament nN) $ doModifyM 0x60 $ noteOrnament nN
-            when (noteVolume oN /= noteVolume nN) $ doModifyM 0x10 $ noteVolume nN
-            when (noteCmd nN /= NoteCmdNone) $ case noteCmd nN of
+
+            when (noteFlags nN `isSet` ChangedSample)
+                $ doModifyM 0xe0 $ noteSample nN
+
+            when (noteFlags nN `isSet` ChangedEnvEnable)
+                $ if noteEnvEnable nN == True
+                     then do
+                         doModify1 $ 0x70 + fromEnum (noteEnvForm nN)
+                         doModify 2 $ putAsWord16le $ noteEnvFreq nN
+                     else doModify1 0x7f
+
+            when (noteFlags nN `isSet` ChangedOrnament)
+                $ doModifyM 0x60 $ noteOrnament nN
+
+            when (noteFlags nN `isSet` ChangedVolume)
+                $ doModifyM 0x10 $ noteVolume nN
+
+            when (noteCmd nN /= NoteCmdNone)
+                $ case noteCmd nN of
                     NoteCmdDelay n -> doModify2 0x0f n
                     NoteCmdGlis n  -> doModify2 0x0e n
                     NoteCmdPorta _ f g -> do
-                        doModify2 0xd0 g
+                        doModify2 0x0d g
                         doModify 2 $ putAsInt16le f
                     NoteCmdNoise n -> doModify2 0x0b n
                     _ -> return ()
+
             doModify1 $ putPitch $ notePitch nN
-            return nN
+
 
         putPitch Release = 0xe0
         putPitch Pause = 0xe0
@@ -186,7 +201,7 @@ putChannel ch = execState (foldM doPutNote newNote (packChannel ch) >> doModify1
         doModify x m = modify $ \(p, l) -> (p >> m, l + x)
         doModify1 x = doModify 1 $ putAsWord8 x
         doModify2 c n = doModify 2 $ putWord8 c >> putAsWord8 n
-        doModifyM x mz = maybe (lift mempty) (\y -> doModify1 (x + y)) mz
+        doModifyM x z = doModify1 $ x + z
 
 
 
@@ -202,19 +217,25 @@ getNotes note = do
         where
             switch x
                 | x == 0x00 = return []
-                | x >= 0xe1 = getNotes $ note { noteSample = Just (x - 0xe0) }
+                | x >= 0xe1 = getNotes $ note { noteSample = (x - 0xe0)
+                                              , noteFlags = noteFlags note `set` ChangedSample }
                 | x == 0xe0 = yieldNotes $ note { notePitch = Pause }
                 | x >= 0x80 = yieldNotes $ note { notePitch = toEnum $ x - 0x80 + fromEnum pitchC1 }
-                | x == 0x7f = getNotes $ note { noteEnvEnable = Just False }
+                | x == 0x7f = getNotes $ note { noteEnvEnable = False
+                                              , noteFlags = noteFlags note `set` ChangedEnvEnable }
                 | x >= 0x71 = do
                     freq <- lift getAsWord16le
-                    getNotes $ note { noteEnvForm = toEnum (x - 0x70)
-                                    , noteEnvFreq = freq
-                                    , noteEnvEnable = Just True }
-                | x == 0x70 = yieldNotes note
-                | x >= 0x60 = getNotes $ note { noteOrnament = Just (x - 0x60) }
+                    getNotes $ note
+                        { noteEnvForm = toEnum (x - 0x70)
+                        , noteEnvFreq = freq
+                        , noteEnvEnable = True
+                        , noteFlags = noteFlags note `set` ChangedEnvForm `set` ChangedEnvFreq `set` ChangedEnvEnable }
+                | x == 0x70 = yieldNotes note { notePitch = NoNote }
+                | x >= 0x60 = getNotes $ note { noteOrnament = (x - 0x60)
+                                              , noteFlags = noteFlags note `set` ChangedOrnament }
                 | x >= 0x20 = put (x - 0x20) >> getNotes note
-                | x >= 0x10 = getNotes $ note { noteVolume = Just (x - 0x10) }
+                | x >= 0x10 = getNotes $ note { noteVolume = (x - 0x10)
+                                              , noteFlags = noteFlags note `set` ChangedVolume }
                 | x == 0x0f = do
                     d <- lift getAsWord8
                     getNotes $ note { noteCmd = NoteCmdDelay d }
@@ -233,7 +254,7 @@ getNotes note = do
 
             yieldNotes note = do
                 r <- get
-                ns <- getNewNotes
+                ns <- getNotes note { noteCmd = NoteCmdNone, noteFlags = noFlags }
                 return $ note : replicate r newNote ++ ns
 
 

@@ -3,6 +3,7 @@ module MOD_Dump.STC  where
 import MOD_Dump.Elements
 import MOD_Dump.Module
 import MOD_Dump.Utils
+import MOD_Dump.FlagSet
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Binary.Get
 import Data.Binary.Put
@@ -12,6 +13,7 @@ import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
+
 
 stcModule :: Module
 stcModule = newModule
@@ -279,11 +281,12 @@ showsNote n = if (isPitch p) then showsPitch p . (' ':) . showsHex 1 s . showsOr
     else
         showsPitch p . showString " ----"
     where
-        s = maybe 0 id $ noteSample n
+        s = noteSample n
         p = notePitch n
         o = noteOrnament n
         showsOrnEnv = if (noteEnvForm n == noEnvForm)
-                         then maybe ("000"++) (\x -> ("F0"++ ) . (showsHex 1 x)) o
+                         then if o == 0 then ("000"++) else ("F0"++ ) . (showsHex 1 o)
+                         --maybe ("000"++) (\x -> ("F0"++ ) . (showsHex 1 x)) o
                          else showsHex 1 (fromEnum $ noteEnvForm n) . showsHex 2 (noteEnvFreq n)
 
 
@@ -304,24 +307,27 @@ getChannel = do
                     | x == 255 = return []
                     | x <= 0x5f = yieldNote $ n{notePitch = toEnum $ x + fromEnum pitchC1}
                     | x == 0x80 = yieldNote $ n{notePitch = Pause}
-                    | x == 0x81 = yieldNote $ n{notePitch = NoNote}
-                    | x == 0x82 = getNotes $ n{noteOrnament = Just 0, noteEnvForm = noEnvForm }
-                    | x >= 0x60 && x <= 0x6f = getNotes $ n{ noteSample = Just (x - 0x60) }
-                    | x >= 0x70 && x <= 0x7f = getNotes $ n{ noteOrnament = Just (x - 0x70) }
+                    | x == 0x81 = yieldNote $ n{notePitch = Release}
+                    | x == 0x82 = getNotes $ n{noteOrnament = 0, noteEnvForm = noEnvForm }
+                    | x >= 0x60 && x <= 0x6f = getNotes $ n{ noteSample = (x - 0x60)
+                                                           , noteFlags = noteFlags n `set` ChangedSample }
+                    | x >= 0x70 && x <= 0x7f = getNotes $ n{ noteOrnament = (x - 0x70)
+                                                           , noteFlags = noteFlags n `set` ChangedOrnament }
                     | x >= 0x83 && x <= 0x8e = do
                         o <- lift getAsWord8
-                        getNotes $ n{noteEnvForm = toEnum (x - 0x80), noteEnvFreq = o, noteEnvEnable = Just True}
+                        getNotes $ n{ noteEnvForm = toEnum (x - 0x80), noteEnvFreq = o
+                                    , noteFlags = noteFlags n `set` ChangedEnvForm `set` ChangedEnvFreq}
                     | x >= 0xa1 && x <= 0xfe = do
                         put (x - 0xa1)
                         getNotes n
                     | otherwise = getNotes n
 
-        getNewNotes = getNotes newNote
+                yieldNote x = do
+                    r <- get
+                    ns <- getNotes n{notePitch = NoNote, noteFlags = noFlags}
+                    return $ x : replicate r newNote ++ ns
 
-        yieldNote x = do
-            r <- get
-            ns <- getNewNotes
-            return $ x : replicate r newNote ++ ns
+        getNewNotes = getNotes newNote
 
 putChannel :: Channel -> (Put, Int) -- returns Put chain and length in bytes
 putChannel ch = (p >> putWord8 255, l + 1)
@@ -330,24 +336,23 @@ putChannel ch = (p >> putWord8 255, l + 1)
 
         putNote oldn (n, mCnt) = do
             maybe (return ()) (\c -> doModify (putCount c) 1) mCnt
-            when (noteSample n /= Nothing && noteSample n /= noteSample oldn)
-                $ doModify (putSample n) 1
-            when (noteOrnament n /= Nothing && noteOrnament n /= noteOrnament oldn)
-                $ doModify (putOrnament n) 1
+            when (noteFlags n `isSet` ChangedSample)   $ doModify (putSample n) 1
+            when (noteFlags n `isSet` ChangedOrnament) $ doModify (putOrnament n) 1
             let (form, freq) = (noteEnvForm n, noteEnvFreq n) in
-                when (form /= noEnvForm) $ doModify (putEnv form freq) 2
+                when (noteFlags n `anySet` [ChangedEnvForm, ChangedEnvFreq]) $ doModify (putEnv form freq) 2
             doModify (putPitch $ notePitch n) 1
             return n
 
-        putPitch Pause  = putWord8 128
-        putPitch NoNote = putWord8 129
-        putPitch n      = putAsWord8 $ (fromEnum n) - fromEnum pitchC1
+        putPitch Pause   = putWord8 128
+        putPitch Release = putWord8 129
+        putPitch NoNote  = return ()
+        putPitch n       = putAsWord8 $ (fromEnum n) - fromEnum pitchC1
 
         putCount c = putAsWord8 $ c + 0xa1
 
-        putSample n = putAsWord8 $ (maybe 0 id $ noteSample n) + 0x60
+        putSample n = putAsWord8 $ noteSample n + 0x60
 
-        putOrnament n = putAsWord8 $ (maybe 0 id $ noteOrnament n) + 0x70
+        putOrnament n = putAsWord8 $ noteOrnament n + 0x70
 
         putEnv form freq  = do
             putAsWord8 $ fromEnum form + 0x80
